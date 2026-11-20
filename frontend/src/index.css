@@ -1,0 +1,34 @@
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+.cesium-container {
+  position: absolute;
+  inset: 0;
+}
+
+.banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: rgba(30, 30, 30, 0.85);
+  color: #ffd479;
+  font-size: 14px;
+  z-index: 10;
+}
+
+.banner code {
+  color: #fff;
+}
