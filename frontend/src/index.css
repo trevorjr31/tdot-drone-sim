@@ -36,3 +36,8 @@ body,
 .banner-info {
   color: #fff;
 }
+
+.banner-bottom {
+  top: auto;
+  bottom: 40px;
+}

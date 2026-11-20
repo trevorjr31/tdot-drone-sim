@@ -3,10 +3,11 @@ import { CesiumViewer, type TilesStatus } from './components/CesiumViewer'
 
 function App() {
   const [status, setStatus] = useState<TilesStatus | null>(null)
+  const [dataError, setDataError] = useState<string | null>(null)
 
   return (
     <>
-      <CesiumViewer onTilesStatus={setStatus} />
+      <CesiumViewer onTilesStatus={setStatus} onDataError={setDataError} />
       {status?.state === 'loading' && <div className="banner banner-info">Loading 3D Toronto…</div>}
       {status?.state === 'error' && (
         <div className="banner">
@@ -16,6 +17,7 @@ function App() {
           <code>frontend/.env.local</code> and restart the dev server.
         </div>
       )}
+      {dataError && <div className="banner banner-bottom">City of Toronto layers unavailable: {dataError}</div>}
     </>
   )
 }

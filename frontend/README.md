@@ -1,32 +1,32 @@
-# React + TypeScript + Vite
+# TDot Drone Sim: frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + TypeScript + Vite app that renders a 3D City of Toronto with CesiumJS.
 
-Currently, two official plugins are available:
+## Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+cp .env.example .env.local   # then fill in VITE_CESIUM_ION_TOKEN
+npm run data                 # download + prepare City of Toronto data
+npm run dev                  # http://localhost:5173
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Keys (`.env.local`, git-ignored)
+
+| Variable | Needed for |
+|---|---|
+| `VITE_CESIUM_ION_TOKEN` | Cesium imagery/terrain, and Google Photorealistic 3D Tiles via ion |
+| `VITE_GOOGLE_MAPS_API_KEY` | Optional. Streams Google 3D Tiles directly from Google instead of ion |
+
+## City of Toronto data
+
+The City's open data API doesn't allow browser requests (no CORS), so
+`npm run data` ([scripts/fetch-toronto-data.ts](scripts/fetch-toronto-data.ts))
+downloads datasets from open.toronto.ca, trims and simplifies them with mapshaper,
+and writes GeoJSON to `public/data/toronto/` (git-ignored). Downloads are cached
+in `.data-cache/`; pass `-- --refresh` to re-download.
+
+The app reads that data only through [src/data/torontoData.ts](src/data/torontoData.ts),
+so it can later point at a backend instead.
+
+Contains information licensed under the Open Government Licence – Toronto.

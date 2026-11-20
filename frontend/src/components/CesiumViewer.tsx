@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import {
   Cartesian3,
+  Credit,
   ImageryLayer,
   Ion,
   Math as CesiumMath,
@@ -9,6 +10,8 @@ import {
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { loadPhotorealisticTiles } from '../cesium/photorealisticTiles'
+import { loadBoundary, loadManifest, loadNeighbourhoods } from '../data/torontoData'
+import { createBoundaryLayer, createNeighbourhoodsLayer } from '../layers/torontoLayers'
 import { config, TORONTO_HOME } from '../config'
 
 export type TilesStatus =
@@ -20,13 +23,16 @@ export type TilesSource = 'google' | 'ion'
 
 type Props = {
   onTilesStatus?: (status: TilesStatus) => void
+  onDataError?: (message: string) => void
 }
 
-export function CesiumViewer({ onTilesStatus }: Props) {
+export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
-  // Keep the latest callback without re-running the effect (which would rebuild the viewer).
+  // Keep the latest callbacks without re-running the effect (which would rebuild the viewer).
   const onStatusRef = useRef(onTilesStatus)
   onStatusRef.current = onTilesStatus
+  const onDataErrorRef = useRef(onDataError)
+  onDataErrorRef.current = onDataError
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -84,6 +90,24 @@ export function CesiumViewer({ onTilesStatus }: Props) {
           report({ state: 'error', source, message: err instanceof Error ? err.message : String(err) })
         })
     }
+
+    // City of Toronto layers, drawn onto the 3D tiles. Independent of the tiles
+    // loading, so they appear as soon as both are ready.
+    Promise.all([loadBoundary(), loadNeighbourhoods(), loadManifest()])
+      .then(([boundary, neighbourhoods, manifest]) => {
+        if (viewer.isDestroyed()) return
+        viewer.dataSources.add(createNeighbourhoodsLayer(neighbourhoods))
+        viewer.dataSources.add(createBoundaryLayer(boundary))
+        // The Open Government Licence – Toronto requires attribution.
+        viewer.creditDisplay.addStaticCredit(
+          new Credit(`<a href="https://open.toronto.ca/" target="_blank" rel="noopener">${manifest.attribution}</a>`),
+        )
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load City of Toronto data', err)
+        if (viewer.isDestroyed()) return
+        onDataErrorRef.current?.(err instanceof Error ? err.message : String(err))
+      })
 
     // React StrictMode mounts effects twice in dev, so always clean up.
     return () => {
