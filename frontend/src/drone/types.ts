@@ -39,11 +39,3 @@ export interface DroneSource {
   /** Called with every new state. Returns an unsubscribe function. */
   subscribe(listener: (state: DroneState) => void): () => void
 }
-
-export type CameraMode = 'free' | 'chase' | 'fpv'
-
-export const CAMERA_MODES: { id: CameraMode; label: string; hint: string }[] = [
-  { id: 'chase', label: 'Chase', hint: 'Follow behind the drone' },
-  { id: 'fpv', label: 'FPV', hint: 'First-person view from the drone' },
-  { id: 'free', label: 'Free', hint: 'Move the map camera yourself' },
-]

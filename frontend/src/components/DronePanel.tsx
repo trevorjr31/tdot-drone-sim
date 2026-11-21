@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
-import { CAMERA_MODES, type CameraMode } from '../drone/types'
 
 export type SourceId = 'demo' | 'px4'
 
@@ -45,8 +44,6 @@ type Props = {
 
   inAir: boolean
   armed: boolean
-  cameraMode: CameraMode
-  onCameraMode: (mode: CameraMode) => void
   trailVisible: boolean
   onTrailVisible: (show: boolean) => void
 }
@@ -106,25 +103,6 @@ export function DronePanel(props: Props) {
           ) : (
             <Px4Controls {...props.px4} inAir={props.inAir} armed={props.armed} takeoffAlt={takeoffAlt} onTakeoffAlt={setTakeoffAlt} />
           )}
-
-          <div className="drone-panel__label">
-            Camera <kbd className="layer-row__key">C</kbd>
-          </div>
-          <div className="segmented" role="radiogroup" aria-label="Camera">
-            {CAMERA_MODES.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                role="radio"
-                aria-checked={props.cameraMode === m.id}
-                className={`segmented__option${props.cameraMode === m.id ? ' is-active' : ''}`}
-                title={m.hint}
-                onClick={() => props.onCameraMode(m.id)}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
 
           <label className="layer-row drone-panel__trail">
             <input type="checkbox" checked={props.trailVisible} onChange={(e) => props.onTrailVisible(e.target.checked)} />

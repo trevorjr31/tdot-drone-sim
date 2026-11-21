@@ -6,19 +6,19 @@ import {
   Ion,
   Math as CesiumMath,
   OpenStreetMapImageryProvider,
+  ScreenSpaceEventType,
   Terrain,
   Viewer,
-  type Cesium3DTileset,
   type CustomDataSource,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { PlaceNavigator } from '../cesium/placeNavigation'
 import { loadPhotorealisticTiles } from '../cesium/photorealisticTiles'
-import { loadBoundary, loadManifest, loadMassingIndex, loadNeighbourhoods } from '../data/torontoData'
+import { loadBoundary, loadManifest, loadNeighbourhoods } from '../data/torontoData'
 import { DroneView } from '../drone/droneView'
 import type { DroneSource } from '../drone/types'
+import { installBuildingPicking } from '../layers/buildingPicking'
 import type { LayerId, LayerStatus, LayerVisibility } from '../layers/layerState'
-import { installMassingPicking, MassingLayer } from '../layers/massingLayer'
 import { createBoundaryLayer, createNeighbourhoodsLayer } from '../layers/torontoLayers'
 import { config, TORONTO_HOME } from '../config'
 import type { MapApi } from '../places/types'
@@ -45,22 +45,14 @@ type Props = {
 /** Cesium objects behind each toggleable layer, filled in as they finish loading. */
 type LayerHandles = {
   viewer?: Viewer
-  google?: Cesium3DTileset
   neighbourhoods?: CustomDataSource
   boundary?: CustomDataSource
-  massing?: MassingLayer
 }
 
 function applyVisibility(h: LayerHandles, v: LayerVisibility) {
   if (!h.viewer || h.viewer.isDestroyed()) return
-  if (h.google) {
-    h.google.show = v.google
-    // With the Google mesh hidden, show the terrain globe so there's ground to stand on.
-    h.viewer.scene.globe.show = !v.google
-  }
   if (h.neighbourhoods) h.neighbourhoods.show = v.neighbourhoods
   if (h.boundary) h.boundary.show = v.boundary
-  if (h.massing) h.massing.show = v.massing
 }
 
 export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapReady, droneSource, onDroneView }: Props) {
@@ -94,11 +86,11 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
     if (hasIon) Ion.defaultAccessToken = config.cesiumIonToken
 
     const viewer = new Viewer(containerRef.current, {
-      // Fallback globe imagery, shown when the 3D tiles are off or fail to load.
+      // Fallback globe imagery, shown only if the photorealistic tiles fail to load.
       baseLayer: hasIon
         ? undefined
         : new ImageryLayer(new OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })),
-      // Real ground heights for when the Google tiles are hidden (massing blocks then stand on terrain).
+      // Ground heights for the fallback globe, and for placing search results and the camera.
       terrain: hasIon ? Terrain.fromWorldTerrain() : undefined,
       baseLayerPicker: false,
       // Google's terms only allow the Google geocoder with these tiles; we use none.
@@ -106,9 +98,15 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
       timeline: false,
       animation: false,
       sceneModePicker: false,
+      // No Home button: the camera always follows the drone.
+      homeButton: false,
       navigationHelpButton: false,
       fullscreenButton: false,
     })
+    // The camera always chases the drone, so drop Cesium's "focus/track this object" features:
+    // double-click to track an entity (the info card's camera button is hidden in CSS).
+    viewer.screenSpaceEventHandler.removeInputAction(ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
+
     const h: LayerHandles = { viewer }
     handles.current = h
     /** Registers a loaded layer and immediately applies the current toggles to it. */
@@ -128,28 +126,22 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
       duration: 3,
     })
 
-    // Search + fly-to. The Home button flies to the downtown view instead of the whole Earth.
+    // Search (pins and fly-to destinations) and the drone, whose chase camera takes over
+    // from the starting view as soon as there's a drone state to follow.
     const navigator = new PlaceNavigator(viewer)
     const droneView = droneSourceRef.current ? new DroneView(viewer, droneSourceRef.current) : undefined
-    viewer.homeButton.viewModel.command.beforeExecute.addEventListener((e: { cancel: boolean }) => {
-      e.cancel = true
-      droneView?.setCameraMode('free') // the Home view needs the map camera back
-      navigator.flyHome()
-    })
     onMapReadyRef.current?.(navigator)
     onDroneViewRef.current?.(droneView ?? null)
 
     // Dev only: lets you poke at the scene from the browser console (window.viewer).
     if (import.meta.env.DEV) (window as unknown as { viewer: Viewer }).viewer = viewer
 
-    // --- Google Photorealistic 3D Tiles ---
+    // --- Google Photorealistic 3D Tiles (always on: this is the map) ---
     const source: TilesSource | null = hasGoogleKey ? 'google' : hasIon ? 'ion' : null
     if (!source) {
       report({ state: 'error', source: null, message: 'No Cesium ion token or Google Maps key set.' })
-      layerStatus('google', 'error', 'No Cesium ion token or Google Maps key set.')
     } else {
       report({ state: 'loading', source })
-      layerStatus('google', 'loading')
       // With a Google key, tiles stream straight from Google; otherwise from Cesium ion.
       loadPhotorealisticTiles(hasGoogleKey ? config.googleMapsApiKey : undefined)
         .then((tileset) => {
@@ -157,14 +149,15 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
             tileset.destroy()
             return
           }
-          ready('google', () => (h.google = viewer.scene.primitives.add(tileset)))
+          viewer.scene.primitives.add(tileset)
+          // The Google mesh includes its own ground, so hide the globe underneath it.
+          viewer.scene.globe.show = false
           report({ state: 'ready', source })
         })
         .catch((err: unknown) => {
           console.error('Failed to load Google Photorealistic 3D Tiles', err)
           if (viewer.isDestroyed()) return
           report({ state: 'error', source, message: err instanceof Error ? err.message : String(err) })
-          layerStatus('google', 'error', err)
         })
     }
 
@@ -194,21 +187,9 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
         layerStatus('boundary', 'error', err)
       })
 
-    // --- 3D Massing, loaded in tiles around the camera ---
-    const uninstallPicking = installMassingPicking(viewer)
-    layerStatus('massing', 'loading')
-    loadMassingIndex()
-      .then((index) => {
-        if (viewer.isDestroyed()) return
-        // Start hidden if toggled off, so no tiles are fetched until it's turned on.
-        const layer = new MassingLayer(viewer, index, visibilityRef.current.massing)
-        ready('massing', () => (h.massing = layer))
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load massing index', err)
-        if (viewer.isDestroyed()) return
-        layerStatus('massing', 'error', err)
-      })
+    // City 3D Massing isn't drawn (the map shows only the photorealistic tiles), but it's
+    // used for building collisions (useCollisions) and for building info on click.
+    const uninstallPicking = installBuildingPicking(viewer)
 
     // React StrictMode mounts effects twice in dev, so always clean up.
     return () => {
@@ -216,7 +197,6 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
       onDroneViewRef.current?.(null)
       droneView?.destroy()
       uninstallPicking()
-      h.massing?.destroy()
       if (!viewer.isDestroyed()) viewer.destroy()
       if (handles.current === h) handles.current = {}
     }

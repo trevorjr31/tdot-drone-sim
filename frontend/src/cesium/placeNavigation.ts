@@ -1,19 +1,16 @@
 import {
-  BoundingSphere,
   Cartesian2,
   Cartesian3,
   Cartographic,
   Color,
   Entity,
   GeocodeType,
-  HeadingPitchRange,
   HeightReference,
   IonGeocodeProviderType,
   IonGeocoderService,
   LabelStyle,
   Math as CesiumMath,
   Rectangle,
-  sampleTerrainMostDetailed,
   ScreenSpaceEventType,
   VerticalOrigin,
   type CustomDataSource,
@@ -21,7 +18,7 @@ import {
 } from 'cesium'
 import { TORONTO_HOME } from '../config'
 import type { BoundaryProps, FeatureCollection, NeighbourhoodProps, Position } from '../data/torontoData'
-import { bboxOf, defaultRange, distanceM, pointInRing } from '../places/geo'
+import { bboxOf, distanceM, pointInRing } from '../places/geo'
 import { normalize, titleFor } from '../places/search'
 import { centreOf, type MapApi, type Place, type PlaceTarget } from '../places/types'
 
@@ -41,8 +38,6 @@ const MARKER_IMAGE =
 
 /** Results further than this from downtown are wrong-city matches (e.g. "King St, Charleston"). */
 const MAX_DISTANCE_FROM_DOWNTOWN_M = 45_000
-/** Typical Toronto ground height above the ellipsoid, if terrain can't be sampled. */
-const FALLBACK_GROUND_HEIGHT_M = 90
 
 type Ring = Position[]
 
@@ -123,32 +118,8 @@ export class PlaceNavigator implements MapApi {
     return result
   }
 
-  flyHome = () => {
-    this.clearPin()
-    this.viewer.selectedEntity = undefined
-    const { longitude, latitude, height, headingDeg, pitchDeg } = TORONTO_HOME
-    this.flyCamera({ lon: longitude, lat: latitude, height, headingDeg, pitchDeg })
-  }
-
-  flyToPlace = (place: Place) => {
+  showPlace = (place: Place) => {
     if (this.viewer.isDestroyed()) return
-    if (place.camera) {
-      this.clearPin()
-      this.viewer.selectedEntity = undefined
-      this.flyCamera(place.camera)
-      return
-    }
-    const { lon, lat } = centreOf(place.target)
-    void this.groundHeight(lon, lat).then((ground) => {
-      if (this.viewer.isDestroyed()) return
-      const centre = Cartesian3.fromDegrees(lon, lat, ground)
-      const view = place.view ?? { headingDeg: 0, pitchDeg: -32, rangeM: defaultRange(place.target) }
-      this.viewer.camera.flyToBoundingSphere(new BoundingSphere(centre, 0), {
-        offset: new HeadingPitchRange(CesiumMath.toRadians(view.headingDeg), CesiumMath.toRadians(view.pitchDeg), view.rangeM),
-        duration: 2.5,
-      })
-    })
-
     if (place.neighbourhoodId) {
       this.clearPin()
       // Select it so its outline is highlighted and its details show in the info box.
@@ -157,6 +128,7 @@ export class PlaceNavigator implements MapApi {
     } else {
       // Close any previously selected neighbourhood/building so its info box doesn't linger.
       this.viewer.selectedEntity = undefined
+      const { lon, lat } = centreOf(place.target)
       this.showPin(lon, lat, place.title)
     }
   }
@@ -232,24 +204,6 @@ export class PlaceNavigator implements MapApi {
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
     })
-  }
-
-  private flyCamera(c: NonNullable<Place['camera']>) {
-    this.viewer.camera.flyTo({
-      destination: Cartesian3.fromDegrees(c.lon, c.lat, c.height),
-      orientation: { heading: CesiumMath.toRadians(c.headingDeg), pitch: CesiumMath.toRadians(c.pitchDeg), roll: 0 },
-      duration: 2.5,
-    })
-  }
-
-  /** Terrain height at a point (works even while the globe is hidden under the Google tiles). */
-  private async groundHeight(lon: number, lat: number): Promise<number> {
-    try {
-      const [c] = await sampleTerrainMostDetailed(this.viewer.terrainProvider, [Cartographic.fromDegrees(lon, lat)])
-      return c.height && Number.isFinite(c.height) && c.height !== 0 ? c.height : FALLBACK_GROUND_HEIGHT_M
-    } catch {
-      return FALLBACK_GROUND_HEIGHT_M
-    }
   }
 
   private insideCity(lon: number, lat: number): boolean {

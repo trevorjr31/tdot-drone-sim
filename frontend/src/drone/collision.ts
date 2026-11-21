@@ -59,6 +59,13 @@ export function buildingsFromTile(fc: FeatureCollection<MassingProps>): Building
   return out
 }
 
+/** Inside the outer ring and not in a courtyard (hole). */
+export function footprintContains(b: Building, lon: number, lat: number): boolean {
+  const [w, s, e, n] = b.bbox
+  if (lon < w || lon > e || lat < s || lat > n) return false
+  return pointInRing(lon, lat, b.outer) && !b.holes.some((h) => pointInRing(lon, lat, h))
+}
+
 /** Shortest distance in metres from a point to a ring's edges (equirectangular, fine at city scale). */
 export function distanceToRingM(lon: number, lat: number, ring: Position[]): number {
   const kx = mPerDegLon(lat)
@@ -149,6 +156,16 @@ export class BuildingCollider {
   /** True once every tile around the last position has loaded. */
   get ready() {
     return [...this.tiles.values()].every((t) => t !== 'loading')
+  }
+
+  /** Buildings whose footprint contains the point, whatever their height (for click info). */
+  footprintsAt(lon: number, lat: number): Building[] {
+    const out: Building[] = []
+    for (const t of this.tiles.values()) {
+      if (t === 'loading') continue
+      for (const b of t) if (footprintContains(b, lon, lat)) out.push(b)
+    }
+    return out
   }
 
   check(lon: number, lat: number, altAmslM: number, options?: CheckOptions): CollisionCheck {

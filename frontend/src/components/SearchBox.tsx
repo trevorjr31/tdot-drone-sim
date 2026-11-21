@@ -135,7 +135,7 @@ export function SearchBox({ api }: { api: MapApi | null }) {
       }
       setBusy(false)
     }
-    api.flyToPlace(place)
+    api.showPlace(place)
     if (place.kind !== 'preset') setRecent(addRecent(place))
     setQuery(place.title)
     setChosenType(placeType(place))

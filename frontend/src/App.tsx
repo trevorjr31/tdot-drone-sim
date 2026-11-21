@@ -19,28 +19,22 @@ function App() {
   // The last place chosen in search, offered to the drone as a fly-to destination.
   const [searchedPlace, setSearchedPlace] = useState<Place | null>(null)
   const drone = useDrone({ pickLocation: mapApi?.pickLocation, searchedPlace })
-  const { droneView } = drone
 
-  // Jumping to a searched place needs the map camera, not the drone's.
+  // A searched place is marked on the map and offered to the drone as a fly-to destination.
   const searchApi = useMemo<MapApi | null>(
     () =>
       mapApi && {
         ...mapApi,
-        flyToPlace: (place) => {
-          droneView?.setCameraMode('free')
-          mapApi.flyToPlace(place)
+        showPlace: (place) => {
+          mapApi.showPlace(place)
           setSearchedPlace(place)
-        },
-        flyHome: () => {
-          droneView?.setCameraMode('free')
-          mapApi.flyHome()
         },
         clearPin: () => {
           mapApi.clearPin()
           setSearchedPlace(null)
         },
       },
-    [mapApi, droneView],
+    [mapApi],
   )
 
 
@@ -65,9 +59,7 @@ function App() {
   }, [toggle, layerStatus])
 
   // A missing data file affects all City layers the same way; show it once.
-  const dataError = (['neighbourhoods', 'massing'] as const)
-    .map((id) => layerStatus[id])
-    .find((s) => s?.status === 'error')?.message
+  const dataError = layerStatus.neighbourhoods?.status === 'error' ? layerStatus.neighbourhoods.message : undefined
 
   return (
     <>

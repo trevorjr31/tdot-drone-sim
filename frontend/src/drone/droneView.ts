@@ -7,7 +7,6 @@ import {
   Color,
   DistanceDisplayCondition,
   Ellipsoid,
-  HeadingPitchRange,
   HeadingPitchRoll,
   HeightReference,
   LabelStyle,
@@ -24,13 +23,16 @@ import { TORONTO_GEOID_OFFSET_M } from '../config'
 import { distanceM } from '../places/geo'
 import { crashState, type CrashSite } from './crash'
 import { lerpAngleDeg, StateBuffer } from './interpolate'
-import type { CameraMode, DroneSource, DroneState } from './types'
+import type { DroneSource, DroneState } from './types'
 
 /** Real quadcopter is ~0.5 m across; drawn larger so it's visible from the chase camera. */
 const VISUAL_SCALE = 4
+/** Starting chase view: this far from the drone, looking down at this angle. */
 const CHASE_RANGE_M = 30
 const CHASE_PITCH_DEG = -15
-const FPV_TILT_DEG = -10
+/** Zoom limits for the chase camera (scroll wheel). */
+const MIN_ZOOM_M = 3
+const MAX_ZOOM_M = 30_000 // far enough to see the whole city around the drone
 const TRAIL_INTERVAL_MS = 400
 const TRAIL_MAX_POINTS = 600
 const HUD_INTERVAL_MS = 200
@@ -65,7 +67,11 @@ type Part = {
 
 /**
  * Draws the drone in the Cesium scene from a DroneSource and drives the camera
- * modes (chase, first-person, free). Knows nothing about where states come from.
+ * chase camera. Knows nothing about where states come from.
+ *
+ * The camera always follows the drone: it orbits it at an offset you can change
+ * with the mouse (drag to rotate, scroll to zoom), and that offset turns with the
+ * drone so the view stays behind it.
  */
 export class DroneView {
   private readonly viewer: Viewer
@@ -80,12 +86,13 @@ export class DroneView {
   /** When (performance.now) the pose below was computed; recomputed once per frame. */
   private poseAt = -Infinity
   private hasPose = false
-  private mode: CameraMode = 'free'
-  private chaseHeadingDeg = 0
+  /** Camera offset from the drone in its local east-north-up frame (metres). */
+  private orbit: Cartesian3 | null = null
+  /** Smoothed drone heading the orbit was last turned to. */
+  private orbitHeadingDeg = 0
   private lastFrameAt = performance.now()
   private lastHudAt = 0
   private aglM: number | null = null
-  private readonly modeListeners = new Set<(m: CameraMode) => void>()
   private readonly hudListeners = new Set<(h: HudInfo | null) => void>()
   private readonly targetListeners = new Set<(t: FlyToTarget | null) => void>()
   private target: FlyToTarget | null = null
@@ -100,6 +107,13 @@ export class DroneView {
 
   constructor(viewer: Viewer, source: DroneSource) {
     this.viewer = viewer
+    // Mouse: drag rotates around the drone, scroll zooms. No panning away from it.
+    const controller = viewer.scene.screenSpaceCameraController
+    controller.enableInputs = true
+    controller.enableTranslate = false
+    controller.enableLook = false
+    controller.minimumZoomDistance = MIN_ZOOM_M
+    controller.maximumZoomDistance = MAX_ZOOM_M
     this.buildModel()
     this.buildOverlays()
 
@@ -118,26 +132,6 @@ export class DroneView {
     this.groundPosition = undefined
     if (source.latest) this.buffer.push(source.latest, performance.now())
     this.unsubscribeSource = source.subscribe((s) => this.buffer.push(s, performance.now()))
-  }
-
-  get cameraMode() {
-    return this.mode
-  }
-
-  setCameraMode(mode: CameraMode) {
-    if (mode === this.mode) return
-    const camera = this.viewer.camera
-    camera.lookAtTransform(Matrix4.IDENTITY) // release any lookAt lock
-    // The drone drives the camera in chase/FPV; the mouse only in free mode.
-    this.viewer.scene.screenSpaceCameraController.enableInputs = mode === 'free'
-    if (mode === 'chase' && this.current) this.chaseHeadingDeg = this.current.headingDeg
-    this.mode = mode
-    for (const listener of this.modeListeners) listener(mode)
-  }
-
-  onCameraModeChange(listener: (m: CameraMode) => void) {
-    this.modeListeners.add(listener)
-    return () => void this.modeListeners.delete(listener)
   }
 
   /** ~5 times a second: the interpolated state plus height above ground. */
@@ -208,10 +202,9 @@ export class DroneView {
     this.unsubscribeSource?.()
     this.cleanups.forEach((fn) => fn())
     if (!this.viewer.isDestroyed()) {
-      this.setCameraMode('free')
+      this.viewer.camera.lookAtTransform(Matrix4.IDENTITY) // release the camera
       for (const e of [...this.parts.map((p) => p.entity), ...this.others]) this.viewer.entities.remove(e)
     }
-    this.modeListeners.clear()
     this.hudListeners.clear()
     this.targetListeners.clear()
   }
@@ -266,7 +259,7 @@ export class DroneView {
 
     this.updatePose()
     const state = this.current
-    for (const part of this.parts) part.entity.show = this.hasPose && this.mode !== 'fpv' // don't sit inside the model
+    for (const part of this.parts) part.entity.show = this.hasPose
     for (const e of this.others) if (e.id !== 'drone-trail') e.show = this.hasPose
     if (!state) {
       // No data (e.g. PX4 selected but not running): clear the HUD rather than show stale numbers.
@@ -304,30 +297,34 @@ export class DroneView {
     }
   }
 
+  /** Chase camera: orbit the drone at the user's offset, swinging round as it turns. */
   private updateCamera(state: DroneState, dt: number) {
     const camera = this.viewer.camera
-    if (this.mode === 'chase') {
-      // Swing round behind the drone smoothly rather than snapping on every turn.
-      this.chaseHeadingDeg = lerpAngleDeg(this.chaseHeadingDeg, state.headingDeg, 1 - Math.exp(-dt * 2.5))
-      camera.lookAt(
-        this.dronePosition,
-        new HeadingPitchRange(
-          CesiumMath.toRadians(this.chaseHeadingDeg),
-          CesiumMath.toRadians(CHASE_PITCH_DEG),
-          CHASE_RANGE_M,
-        ),
-      )
-    } else if (this.mode === 'fpv') {
-      camera.lookAtTransform(Matrix4.IDENTITY)
-      camera.setView({
-        destination: this.dronePosition,
-        orientation: {
-          heading: CesiumMath.toRadians(state.headingDeg),
-          pitch: CesiumMath.toRadians(state.pitchDeg + FPV_TILT_DEG),
-          roll: CesiumMath.toRadians(state.rollDeg),
-        },
-      })
+    const frame = Transforms.eastNorthUpToFixedFrame(this.dronePosition)
+
+    if (!this.orbit) {
+      // First view: behind and a little above the drone.
+      camera.cancelFlight()
+      this.orbitHeadingDeg = state.headingDeg
+      const h = CesiumMath.toRadians(state.headingDeg)
+      const p = CesiumMath.toRadians(-CHASE_PITCH_DEG)
+      const flat = CHASE_RANGE_M * Math.cos(p)
+      this.orbit = new Cartesian3(-Math.sin(h) * flat, -Math.cos(h) * flat, CHASE_RANGE_M * Math.sin(p))
+    } else {
+      // Keep whatever angle/zoom the user has dragged to (camera.position is in the drone's local frame)…
+      if (!Matrix4.equals(camera.transform, Matrix4.IDENTITY)) Cartesian3.clone(camera.position, this.orbit)
+      // …and turn it with the drone, smoothly, so the view stays behind it.
+      const heading = lerpAngleDeg(this.orbitHeadingDeg, state.headingDeg, 1 - Math.exp(-dt * 2.5))
+      const delta = CesiumMath.toRadians(((((heading - this.orbitHeadingDeg) % 360) + 540) % 360) - 180)
+      this.orbitHeadingDeg = heading
+      if (delta !== 0) {
+        // Compass headings turn clockwise, i.e. negative about the local up axis.
+        const { x, y } = this.orbit
+        this.orbit.x = x * Math.cos(delta) + y * Math.sin(delta)
+        this.orbit.y = -x * Math.sin(delta) + y * Math.cos(delta)
+      }
     }
+    camera.lookAtTransform(frame, this.orbit)
   }
 
   /** Height of whatever is rendered directly below the drone (Google mesh, terrain or massing). */

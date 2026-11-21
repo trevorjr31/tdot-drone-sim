@@ -54,10 +54,10 @@ and the City's 158 neighbourhoods:
   Google's terms when using its 3D Tiles), after a short pause or on Enter. Queries are
   pinned to Toronto; results far outside it are dropped, and ones outside the City
   boundary are tagged.
-- Results fly to an angled view and drop a pin; neighbourhoods are selected instead.
+- Results drop a pin (neighbourhoods are selected instead); the camera stays on the drone.
+  The Drone panel offers the last result as a **Fly to** destination.
 - Saved places live in [src/places/presets.ts](src/places/presets.ts). Most are
   defined by name/address and looked up once per browser; recent searches are remembered.
-- The Home button returns to the downtown view.
 
 ## Drone
 
@@ -83,15 +83,17 @@ The **Drone** panel (left) has two sources, both producing the same
 
 The chosen source is remembered in this browser.
 
-- **Cameras** (**C** cycles): *Chase* follows behind, *FPV* is the drone's-eye view,
-  *Free* gives the mouse back. Searching for a place or pressing Home switches to Free.
+- **Camera**: always a chase camera on the drone. It starts behind and above it and swings
+  round to stay behind as it turns; **drag** to rotate around the drone, **scroll** to zoom
+  (3 m to 30 km). Your angle and zoom are kept as it flies. There's no free camera or Home
+  button for now.
 - **HUD** (bottom-right): height above whatever is below (ground or roof), altitude above
   sea level, speed, climb, heading, distance from home, battery, flight mode, armed state,
   and a warning above Transport Canada's 122 m (400 ft) limit.
 - The model is drawn 4× real size so it's visible from the chase camera; a red dot marks
   it from far away, a dashed line drops to the ground, and a yellow trail shows the path.
 - **Building collisions**: every state is checked against City massing footprints near the
-  drone (tiles load around it whether or not the massing layer is shown). Inside a
+  drone (tiles load around it; the massing is never drawn on the map). Inside a
   footprint and below its roof (the building's highest point), or within 2.5 m of its wall,
   is a **crash**. The impact point is where the drone's path met the wall (found by
   bisecting between the last two samples), so it never goes inside. The drone tumbles and
@@ -110,12 +112,17 @@ the browser console for debugging.
 
 ## Controls
 
-Left-drag pans, right-drag/scroll zooms, Ctrl+drag tilts. Click a neighbourhood or
+Drag rotates around the drone, scroll zooms. Click a neighbourhood or
 building for details.
 
-The **Layers** panel (top-left) toggles each layer; your choices are remembered in
-this browser. Shortcuts: **G** photorealistic 3D, **M** building massing,
-**N** neighbourhoods, **B** city boundary. With photorealistic 3D off, the map shows
-Cesium terrain and satellite imagery, and the overlays drape onto that instead.
+The map is always the photorealistic 3D city. The **Layers** panel (top-left) toggles
+the two overlays, **N** neighbourhoods and **B** city boundary; your choices are
+remembered in this browser. The City 3D Massing data is never drawn: it runs in the
+background for building collisions, the HUD's building distance, and click info.
+
+Clicking works at any zoom: on a building you get its heights from the City footprint
+under the click *and* the neighbourhood it's in; anywhere else you get the neighbourhood.
+Buildings are matched by footprint only, because from far away the clicked 3D position
+is too imprecise vertically to tell a roof from the ground.
 
 Contains information licensed under the Open Government Licence – Toronto.

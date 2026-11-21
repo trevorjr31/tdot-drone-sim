@@ -761,3 +761,9 @@ body,
 .drone-panel__crash-error {
   color: var(--panel-accent);
 }
+
+/* The camera always follows the drone, so hide the info card's "focus camera on this" button.
+   (Scoped under .cesium-infoBox to win over Cesium's own stylesheet, which loads later.) */
+.cesium-infoBox .cesium-infoBox-camera {
+  display: none;
+}

@@ -5,7 +5,6 @@ import { centreOf, type MapApi, type Place } from '../places/types'
 import type { DroneView, FlyToTarget, HudInfo } from './droneView'
 import { KeyboardFlight } from './keyboardFlight'
 import { Px4BridgeSource, type BridgeStatus, type Px4Command, type Px4CommandParams } from './px4Bridge'
-import { CAMERA_MODES, type CameraMode } from './types'
 import type { CrashSite } from './crash'
 import { useCollisions } from './useCollisions'
 
@@ -36,7 +35,6 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
   const [px4] = useState(() => new Px4BridgeSource())
   const [sourceId, setSourceId] = useState<SourceId>(loadSource)
   const [droneView, setDroneView] = useState<DroneView | null>(null)
-  const [cameraMode, setCameraMode] = useState<CameraMode>('free')
   const [hud, setHud] = useState<HudInfo | null>(null)
   const [trailVisible, setTrailVisible] = useState(true)
   const [px4Status, setPx4Status] = useState<BridgeStatus>(px4.status)
@@ -51,11 +49,9 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
 
   useEffect(() => {
     if (!droneView) return
-    const offMode = droneView.onCameraModeChange(setCameraMode)
     const offHud = droneView.onHud(setHud)
     const offTarget = droneView.onTargetChange(setTarget)
     return () => {
-      offMode()
       offHud()
       offTarget()
     }
@@ -106,18 +102,10 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     if (import.meta.env.DEV) (window as unknown as { tdot: unknown }).tdot = { demo, px4, droneView }
   }, [demo, px4, droneView])
 
-  const changeCamera = useCallback((mode: CameraMode) => droneView?.setCameraMode(mode), [droneView])
-
-  /** Following the drone is the natural view once it starts flying. */
-  const followDrone = useCallback(() => {
-    if (droneView?.cameraMode === 'free') droneView.setCameraMode('chase')
-  }, [droneView])
-
   const startDemo = useCallback(() => {
     if (demo.finished) droneView?.clearTrail()
     demo.start()
-    followDrone()
-  }, [demo, droneView, followDrone])
+  }, [demo, droneView])
 
   const resetDemo = useCallback(() => {
     demo.reset()
@@ -133,10 +121,7 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
       if (action !== 'goto') droneView?.setTarget(null) // a new command replaces any fly-to
       return px4
         .command(action, params)
-        .then(() => {
-          if (action === 'takeoff' || action === 'goto') followDrone()
-          return true
-        })
+        .then(() => true)
         .catch((err: unknown) => {
           setPx4Error(err instanceof Error ? err.message : String(err))
           if (action === 'goto') droneView?.setTarget(null)
@@ -144,7 +129,7 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
         })
         .finally(() => setPx4Busy(null))
     },
-    [px4, droneView, followDrone],
+    [px4, droneView],
   )
 
   // Fly-to: PX4 flies to the point at its current height.
@@ -171,12 +156,10 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
   }, [searchedPlace, flyTo])
 
   // Keyboard flying, enabled while PX4 is connected and the drone is airborne.
-  const followRef = useRef(followDrone)
   const droneViewRef = useRef(droneView)
   useEffect(() => {
-    followRef.current = followDrone
     droneViewRef.current = droneView
-  }, [followDrone, droneView])
+  }, [droneView])
   const keyboardRef = useRef<KeyboardFlight | null>(null)
   useEffect(() => {
     // Created in an effect (not during render) so React dev mode's double render can't leak listeners.
@@ -184,10 +167,7 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
       (v) => px4.sendVelocity(v),
       (active) => {
         setKeysActive(active)
-        if (active) {
-          followRef.current()
-          droneViewRef.current?.setTarget(null) // taking the sticks cancels a fly-to
-        }
+        if (active) droneViewRef.current?.setTarget(null) // taking the sticks cancels a fly-to
       },
     )
     keyboardRef.current = keyboard
@@ -225,17 +205,6 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     setCrashed(false)
   }, [sourceId, px4Command, demo, droneView])
 
-  // C cycles the camera: chase → FPV → free.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() !== 'c' || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-      const order = CAMERA_MODES.map((m) => m.id)
-      changeCamera(order[(order.indexOf(cameraMode) + 1) % order.length])
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [cameraMode, changeCamera])
 
   return {
     /** Source the 3D view starts with (CesiumViewer prop). */
@@ -275,8 +244,6 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
       },
       inAir: hud?.state.inAir ?? false,
       armed: hud?.state.armed ?? false,
-      cameraMode,
-      onCameraMode: changeCamera,
       trailVisible,
       onTrailVisible: setTrailVisible,
     },
