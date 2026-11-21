@@ -12,7 +12,6 @@ import {
   IonGeocoderService,
   LabelStyle,
   Math as CesiumMath,
-  PinBuilder,
   Rectangle,
   sampleTerrainMostDetailed,
   VerticalOrigin,
@@ -23,6 +22,20 @@ import { TORONTO_HOME } from '../config'
 import type { BoundaryProps, FeatureCollection, NeighbourhoodProps, Position } from '../data/torontoData'
 import { normalize, titleFor } from '../places/search'
 import { centreOf, type MapApi, type Place, type PlaceTarget } from '../places/types'
+
+/**
+ * Classic map marker: round head, pointed tip at the bottom, black dot in the head.
+ * Drawn at 2× and displayed at MARKER_W × MARKER_H so it stays crisp on high-DPI screens.
+ */
+const MARKER_W = 32
+const MARKER_H = 44
+const MARKER_IMAGE =
+  'data:image/svg+xml;charset=utf-8,' +
+  encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${MARKER_W * 2}" height="${MARKER_H * 2}" viewBox="0 0 32 44">
+  <path d="M16 1.5C8.3 1.5 2 7.6 2 15.2c0 9.9 11.6 24.9 13.1 26.8a1.1 1.1 0 0 0 1.8 0C18.4 40.1 30 25.1 30 15.2 30 7.6 23.7 1.5 16 1.5z"
+    fill="#e63946" stroke="#ffffff" stroke-width="2"/>
+  <circle cx="16" cy="15" r="5.2" fill="#111111"/>
+</svg>`)
 
 /** Results further than this from downtown are wrong-city matches (e.g. "King St, Charleston"). */
 const MAX_DISTANCE_FROM_DOWNTOWN_M = 45_000
@@ -157,7 +170,9 @@ export class PlaceNavigator implements MapApi {
       name: title,
       position: Cartesian3.fromDegrees(lon, lat),
       billboard: {
-        image: new PinBuilder().fromColor(Color.fromCssColorString('#e63946'), 44).toDataURL(),
+        image: MARKER_IMAGE,
+        width: MARKER_W,
+        height: MARKER_H,
         verticalOrigin: VerticalOrigin.BOTTOM,
         // Sit on whatever is there: Google mesh roofs/streets or terrain.
         heightReference: HeightReference.CLAMP_TO_GROUND,
@@ -172,7 +187,7 @@ export class PlaceNavigator implements MapApi {
         outlineWidth: 3,
         style: LabelStyle.FILL_AND_OUTLINE,
         verticalOrigin: VerticalOrigin.BOTTOM,
-        pixelOffset: new Cartesian2(0, -50),
+        pixelOffset: new Cartesian2(0, -(MARKER_H + 6)),
         heightReference: HeightReference.CLAMP_TO_GROUND,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
