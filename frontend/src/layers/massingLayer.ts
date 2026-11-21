@@ -50,9 +50,10 @@ export class MassingLayer {
   private readonly viewer: Viewer
   private readonly index: MassingIndex
 
-  constructor(viewer: Viewer, index: MassingIndex) {
+  constructor(viewer: Viewer, index: MassingIndex, show = true) {
     this.viewer = viewer
     this.index = index
+    this.collection.show = show
     viewer.scene.primitives.add(this.collection)
 
     // Re-check which tiles are needed whenever the camera stops, and during long moves.

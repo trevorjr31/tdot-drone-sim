@@ -46,6 +46,11 @@ so it can later point at a backend instead.
 ## Controls
 
 Left-drag pans, right-drag/scroll zooms, Ctrl+drag tilts. Click a neighbourhood or
-building for details. Temporary keys: **G** toggles Google 3D tiles, **M** toggles massing.
+building for details.
+
+The **Layers** panel (top-left) toggles each layer; your choices are remembered in
+this browser. Shortcuts: **G** photorealistic 3D, **M** building massing,
+**N** neighbourhoods, **B** city boundary. With photorealistic 3D off, the map shows
+Cesium terrain and satellite imagery, and the overlays drape onto that instead.
 
 Contains information licensed under the Open Government Licence – Toronto.

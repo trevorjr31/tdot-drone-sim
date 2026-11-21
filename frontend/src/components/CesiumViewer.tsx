@@ -9,10 +9,12 @@ import {
   Terrain,
   Viewer,
   type Cesium3DTileset,
+  type CustomDataSource,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { loadPhotorealisticTiles } from '../cesium/photorealisticTiles'
 import { loadBoundary, loadManifest, loadMassingIndex, loadNeighbourhoods } from '../data/torontoData'
+import type { LayerId, LayerStatus, LayerVisibility } from '../layers/layerState'
 import { installMassingPicking, MassingLayer } from '../layers/massingLayer'
 import { createBoundaryLayer, createNeighbourhoodsLayer } from '../layers/torontoLayers'
 import { config, TORONTO_HOME } from '../config'
@@ -25,28 +27,58 @@ export type TilesStatus =
 export type TilesSource = 'google' | 'ion'
 
 type Props = {
+  visibility: LayerVisibility
   onTilesStatus?: (status: TilesStatus) => void
-  onDataError?: (message: string) => void
+  onLayerStatus?: (layer: LayerId, status: LayerStatus, message?: string) => void
 }
 
-export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
+/** Cesium objects behind each toggleable layer, filled in as they finish loading. */
+type LayerHandles = {
+  viewer?: Viewer
+  google?: Cesium3DTileset
+  neighbourhoods?: CustomDataSource
+  boundary?: CustomDataSource
+  massing?: MassingLayer
+}
+
+function applyVisibility(h: LayerHandles, v: LayerVisibility) {
+  if (!h.viewer || h.viewer.isDestroyed()) return
+  if (h.google) {
+    h.google.show = v.google
+    // With the Google mesh hidden, show the terrain globe so there's ground to stand on.
+    h.viewer.scene.globe.show = !v.google
+  }
+  if (h.neighbourhoods) h.neighbourhoods.show = v.neighbourhoods
+  if (h.boundary) h.boundary.show = v.boundary
+  if (h.massing) h.massing.show = v.massing
+}
+
+export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
-  // Keep the latest callbacks without re-running the effect (which would rebuild the viewer).
+  const handles = useRef<LayerHandles>({})
+  // Keep the latest props without re-running the setup effect (which would rebuild the viewer).
+  const visibilityRef = useRef(visibility)
+  visibilityRef.current = visibility
   const onStatusRef = useRef(onTilesStatus)
   onStatusRef.current = onTilesStatus
-  const onDataErrorRef = useRef(onDataError)
-  onDataErrorRef.current = onDataError
+  const onLayerStatusRef = useRef(onLayerStatus)
+  onLayerStatusRef.current = onLayerStatus
+
+  // Apply toggles whenever they change.
+  useEffect(() => applyVisibility(handles.current, visibility), [visibility])
 
   useEffect(() => {
     if (!containerRef.current) return
     const report = (s: TilesStatus) => onStatusRef.current?.(s)
+    const layerStatus = (id: LayerId, s: LayerStatus, err?: unknown) =>
+      onLayerStatusRef.current?.(id, s, err === undefined ? undefined : err instanceof Error ? err.message : String(err))
 
     const hasIon = Boolean(config.cesiumIonToken)
     const hasGoogleKey = Boolean(config.googleMapsApiKey)
     if (hasIon) Ion.defaultAccessToken = config.cesiumIonToken
 
     const viewer = new Viewer(containerRef.current, {
-      // Fallback globe imagery, only visible if the 3D tiles fail to load.
+      // Fallback globe imagery, shown when the 3D tiles are off or fail to load.
       baseLayer: hasIon
         ? undefined
         : new ImageryLayer(new OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })),
@@ -61,6 +93,14 @@ export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
       navigationHelpButton: false,
       fullscreenButton: false,
     })
+    const h: LayerHandles = { viewer }
+    handles.current = h
+    /** Registers a loaded layer and immediately applies the current toggles to it. */
+    const ready = (id: LayerId, assign: () => void) => {
+      assign()
+      applyVisibility(h, visibilityRef.current)
+      layerStatus(id, 'ready')
+    }
 
     viewer.camera.flyTo({
       destination: Cartesian3.fromDegrees(TORONTO_HOME.longitude, TORONTO_HOME.latitude, TORONTO_HOME.height),
@@ -75,14 +115,14 @@ export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
     // Dev only: lets you poke at the scene from the browser console (window.viewer).
     if (import.meta.env.DEV) (window as unknown as { viewer: Viewer }).viewer = viewer
 
-    let googleTiles: Cesium3DTileset | undefined
-    let massing: MassingLayer | undefined
-
+    // --- Google Photorealistic 3D Tiles ---
     const source: TilesSource | null = hasGoogleKey ? 'google' : hasIon ? 'ion' : null
     if (!source) {
       report({ state: 'error', source: null, message: 'No Cesium ion token or Google Maps key set.' })
+      layerStatus('google', 'error', 'No Cesium ion token or Google Maps key set.')
     } else {
       report({ state: 'loading', source })
+      layerStatus('google', 'loading')
       // With a Google key, tiles stream straight from Google; otherwise from Cesium ion.
       loadPhotorealisticTiles(hasGoogleKey ? config.googleMapsApiKey : undefined)
         .then((tileset) => {
@@ -90,25 +130,29 @@ export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
             tileset.destroy()
             return
           }
-          googleTiles = viewer.scene.primitives.add(tileset)
-          // The Google mesh includes its own ground, so hide the globe underneath it.
-          viewer.scene.globe.show = false
+          ready('google', () => (h.google = viewer.scene.primitives.add(tileset)))
           report({ state: 'ready', source })
         })
         .catch((err: unknown) => {
           console.error('Failed to load Google Photorealistic 3D Tiles', err)
           if (viewer.isDestroyed()) return
           report({ state: 'error', source, message: err instanceof Error ? err.message : String(err) })
+          layerStatus('google', 'error', err)
         })
     }
 
-    // City of Toronto layers, drawn onto the 3D tiles. Independent of the tiles
-    // loading, so they appear as soon as both are ready.
+    // --- City of Toronto boundary + neighbourhoods ---
+    layerStatus('neighbourhoods', 'loading')
+    layerStatus('boundary', 'loading')
     Promise.all([loadBoundary(), loadNeighbourhoods(), loadManifest()])
       .then(([boundary, neighbourhoods, manifest]) => {
         if (viewer.isDestroyed()) return
-        viewer.dataSources.add(createNeighbourhoodsLayer(neighbourhoods))
-        viewer.dataSources.add(createBoundaryLayer(boundary))
+        const neighbourhoodsLayer = createNeighbourhoodsLayer(neighbourhoods)
+        const boundaryLayer = createBoundaryLayer(boundary)
+        void viewer.dataSources.add(neighbourhoodsLayer)
+        void viewer.dataSources.add(boundaryLayer)
+        ready('neighbourhoods', () => (h.neighbourhoods = neighbourhoodsLayer))
+        ready('boundary', () => (h.boundary = boundaryLayer))
         // The Open Government Licence – Toronto requires attribution.
         viewer.creditDisplay.addStaticCredit(
           new Credit(`<a href="https://open.toronto.ca/" target="_blank" rel="noopener">${manifest.attribution}</a>`),
@@ -117,42 +161,32 @@ export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
       .catch((err: unknown) => {
         console.error('Failed to load City of Toronto data', err)
         if (viewer.isDestroyed()) return
-        onDataErrorRef.current?.(err instanceof Error ? err.message : String(err))
+        layerStatus('neighbourhoods', 'error', err)
+        layerStatus('boundary', 'error', err)
       })
 
-    // 3D Massing buildings, loaded in tiles around the camera.
+    // --- 3D Massing, loaded in tiles around the camera ---
     const uninstallPicking = installMassingPicking(viewer)
+    layerStatus('massing', 'loading')
     loadMassingIndex()
       .then((index) => {
         if (viewer.isDestroyed()) return
-        massing = new MassingLayer(viewer, index)
+        // Start hidden if toggled off, so no tiles are fetched until it's turned on.
+        const layer = new MassingLayer(viewer, index, visibilityRef.current.massing)
+        ready('massing', () => (h.massing = layer))
       })
       .catch((err: unknown) => {
         console.error('Failed to load massing index', err)
         if (viewer.isDestroyed()) return
-        onDataErrorRef.current?.(err instanceof Error ? err.message : String(err))
+        layerStatus('massing', 'error', err)
       })
-
-    // Temporary keyboard toggles until the layer panel exists (chunk 3c):
-    //   G = Google 3D tiles (shows the terrain globe instead), M = massing buildings.
-    const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.target instanceof HTMLInputElement) return
-      const key = e.key.toLowerCase()
-      if (key === 'g' && googleTiles) {
-        googleTiles.show = !googleTiles.show
-        viewer.scene.globe.show = !googleTiles.show
-      } else if (key === 'm' && massing) {
-        massing.show = !massing.show
-      }
-    }
-    window.addEventListener('keydown', onKey)
 
     // React StrictMode mounts effects twice in dev, so always clean up.
     return () => {
-      window.removeEventListener('keydown', onKey)
       uninstallPicking()
-      massing?.destroy()
+      h.massing?.destroy()
       if (!viewer.isDestroyed()) viewer.destroy()
+      if (handles.current === h) handles.current = {}
     }
   }, [])
 

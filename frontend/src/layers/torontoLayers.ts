@@ -14,8 +14,10 @@ import type {
   Position,
 } from '../data/torontoData'
 
-// Draw onto the Google mesh (roofs, streets) rather than the hidden globe.
-const DRAPE = ClassificationType.CESIUM_3D_TILE
+// Drape onto the Google mesh (roofs, streets) and onto the terrain globe, which
+// is what shows when the photorealistic layer is turned off. Only one of the two
+// is visible at a time, so there's no double-drawing.
+const DRAPE = ClassificationType.BOTH
 
 /** Splits Polygon / MultiPolygon into a list of polygons, each [outerRing, ...holes]. */
 function polygonsOf(geometry: PolygonGeometry): Position[][][] {
