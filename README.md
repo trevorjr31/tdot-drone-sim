@@ -43,12 +43,40 @@ telemetry. The bridge listens on `ws://localhost:8765` (localhost only).
 Home position is set with `PX4_HOME_LAT` / `PX4_HOME_LON` / `PX4_HOME_ALT` (metres
 above sea level) in [docker-compose.yml](docker-compose.yml).
 
+### Crash and reset
+
+PX4 doesn't know about buildings, so the app detects collisions (see
+[frontend/README.md](frontend/README.md)) and sends `crash`: the bridge cuts the motors
+and PX4's physics drops the drone. `reset` restarts PX4: the bridge sends a MAVLink
+shutdown (PX4 SITL can't reboot itself), Docker's `restart: unless-stopped` starts it
+again at home, and the bridge re-uploads the geofence. For this, the **bridge owns the
+Docker network** and PX4 joins it (`network_mode: service:bridge`), so PX4 restarting
+doesn't take the bridge's network down.
+
+Don't run `bridge_test.py` with the app open on the PX4 source: the app's collision
+check would react to the test drone.
+
+### Geofence
+
+Whenever PX4 (re)connects, the bridge uploads the City of Toronto boundary as an
+inclusion geofence and sets a **120 m ceiling** above home (the drone limit is 122 m), with
+**Return** as the breach action. PX4 enforces it itself, with or without a browser open.
+The fence comes from `frontend/public/data/toronto/boundary-fence.geojson` (made by
+`npm run data`, mounted read-only into the bridge). PX4 stores at most 64 fence points,
+so the boundary is simplified to ~50 points, within about 500 m of the true line.
+
+If PX4 takes over while you're flying with the keyboard (geofence, failsafe), the bridge
+won't take control back until the keys are released, since re-entering offboard would
+count as a pilot takeover and cancel PX4's failsafe.
+
 ### Smoke tests
 
 Both check home is in Toronto, take off to 20 m and land. `flight_test.py` talks to PX4
 directly over MAVLink; `bridge_test.py` goes through the bridge's WebSocket exactly as the
-browser does: it checks the 20 Hz state rate, flies forward with keyboard-style velocity
-messages, checks the hover and hand-back to Hold, then flies to a point 60 m north:
+browser does: it checks the geofence is loaded and the 20 Hz state rate, flies forward
+with keyboard-style velocity messages, checks the hover and hand-back to Hold, flies to a
+point 60 m north, climbs into the 120 m ceiling and checks PX4 switches to Return, then
+crashes (motors cut: it must fall and disarm) and resets (back at home, geofence re-uploaded):
 
 ```bash
 docker run --rm --network container:tdot-px4 -v "$PWD/sim/tools:/tools:ro" \
@@ -75,9 +103,9 @@ WebSocket protocol (see [sim/bridge/bridge.py](sim/bridge/bridge.py)):
 
 | Direction | Message |
 |---|---|
-| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2"}` on connect and on change |
+| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…}}` on connect and on change |
 | bridge → app | `{"type":"state","state":{…}}` at 20 Hz, same fields as the app's `DroneState` |
-| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`) |
+| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `crash`, `reset`) |
 | bridge → app | `{"type":"ack","id":"…","ok":false,"error":"…"}` with PX4's reason if refused |
 | app → bridge | `{"type":"velocity","forwardMs":5,"rightMs":0,"downMs":0,"yawRateDegS":0}` ~10 Hz while keys are held (keyboard flying; body frame, down positive) |
 | bridge → app | `{"type":"notice","level":"error","message":"…"}` e.g. "Take off first" |
@@ -94,6 +122,6 @@ GitHub Actions ([.github/workflows](.github/workflows)):
 | Workflow | Runs on | Does |
 |---|---|---|
 | Frontend | changes under `frontend/` | lint, type-check, unit tests, production build |
-| Flight sim | changes under `sim/` or `docker-compose.yml`, or manually | builds PX4 + bridge and runs both smoke tests |
+| Flight sim | changes under `sim/` or `docker-compose.yml`, or manually | builds PX4 + bridge, fetches the geofence boundary, runs both smoke tests |
 
 Dependabot opens weekly update PRs for npm, pip, the Docker base image and the Actions.

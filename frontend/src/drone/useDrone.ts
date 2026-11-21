@@ -6,6 +6,8 @@ import type { DroneView, FlyToTarget, HudInfo } from './droneView'
 import { KeyboardFlight } from './keyboardFlight'
 import { Px4BridgeSource, type BridgeStatus, type Px4Command, type Px4CommandParams } from './px4Bridge'
 import { CAMERA_MODES, type CameraMode } from './types'
+import type { CrashSite } from './crash'
+import { useCollisions } from './useCollisions'
 
 const SOURCE_KEY = 'tdot.droneSource.v1'
 
@@ -43,6 +45,7 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
   const [keysActive, setKeysActive] = useState(false)
   const [target, setTarget] = useState<FlyToTarget | null>(null)
   const [picking, setPicking] = useState(false)
+  const [crashed, setCrashed] = useState(false)
 
   const source = sourceId === 'demo' ? demo : px4
 
@@ -77,10 +80,15 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     }
   }, [sourceId, demo, px4])
 
-  const selectSource = useCallback((id: SourceId) => {
-    setSourceId(id)
-    setPx4Error(null) // an error from the other source no longer applies
-  }, [])
+  const selectSource = useCallback(
+    (id: SourceId) => {
+      setSourceId(id)
+      setPx4Error(null) // an error from the other source no longer applies
+      droneView?.clearCrash() // a crash belongs to the source that crashed
+      setCrashed(false)
+    },
+    [droneView],
+  )
 
   useEffect(() => px4.onStatus(setPx4Status), [px4])
   useEffect(() => px4.onNotice(setPx4Error), [px4])
@@ -116,20 +124,23 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     droneView?.clearTrail()
   }, [demo, droneView])
 
+  /** Sends a PX4 command; resolves true if PX4 accepted it (errors show in the panel). */
   const px4Command = useCallback(
-    (action: Px4Command, params?: Px4CommandParams) => {
+    (action: Px4Command, params?: Px4CommandParams): Promise<boolean> => {
       setPx4Busy(action)
       setPx4Error(null)
       if (action === 'takeoff') droneView?.clearTrail()
       if (action !== 'goto') droneView?.setTarget(null) // a new command replaces any fly-to
-      px4
+      return px4
         .command(action, params)
         .then(() => {
           if (action === 'takeoff' || action === 'goto') followDrone()
+          return true
         })
         .catch((err: unknown) => {
           setPx4Error(err instanceof Error ? err.message : String(err))
           if (action === 'goto') droneView?.setTarget(null)
+          return false
         })
         .finally(() => setPx4Busy(null))
     },
@@ -140,7 +151,7 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
   const flyTo = useCallback(
     (lat: number, lon: number, label: string) => {
       droneView?.setTarget({ lat, lon, label })
-      px4Command('goto', { lat, lon })
+      void px4Command('goto', { lat, lon })
     },
     [droneView, px4Command],
   )
@@ -185,8 +196,34 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
       keyboardRef.current = null
     }
   }, [px4])
-  const canFly = sourceId === 'px4' && px4Status === 'connected' && (hud?.state.inAir ?? false)
+  const canFly = sourceId === 'px4' && px4Status === 'connected' && !crashed && (hud?.state.inAir ?? false)
   useEffect(() => keyboardRef.current?.setEnabled(canFly), [canFly])
+
+  // Building collisions: PX4 doesn't know about buildings, so the app decides it crashed.
+  // The drone is drawn falling from the impact point at the wall (never inside), and with
+  // PX4 the motors are cut so its own physics drops it too.
+  const onBuildingHit = useCallback(
+    (site: CrashSite) => {
+      keyboardRef.current?.interrupt()
+      droneView?.crash(site)
+      setCrashed(true)
+      if (sourceId === 'px4') void px4Command('crash')
+      else demo.pause()
+    },
+    [sourceId, droneView, px4Command, demo],
+  )
+  const collision = useCollisions(source, onBuildingHit, !crashed)
+
+  /** Back to the start: PX4 restarts at home (or the demo resets), the wreck is cleared. */
+  const resetAfterCrash = useCallback(async () => {
+    if (sourceId === 'px4') {
+      if (!(await px4Command('reset'))) return
+    } else {
+      demo.reset()
+    }
+    droneView?.clearCrash()
+    setCrashed(false)
+  }, [sourceId, px4Command, demo, droneView])
 
   // C cycles the camera: chase → FPV → free.
   useEffect(() => {
@@ -206,7 +243,11 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     setDroneView,
     droneView,
     hud,
+    collision,
+    crashed,
     panel: {
+      crashed,
+      onReset: () => void resetAfterCrash(),
       source: sourceId,
       onSource: selectSource,
       demo: {
@@ -222,12 +263,13 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
         url: px4.url,
         busy: px4Busy,
         error: px4Error,
-        onCommand: px4Command,
+        onCommand: (action: Px4Command, params?: Px4CommandParams) => void px4Command(action, params),
         canFly,
         keysActive,
         target,
         picking,
         searchedPlaceTitle: searchedPlace?.title ?? null,
+        geofence: sourceId === 'px4' ? px4.geofence : null,
         onPickAndFly: () => void pickAndFly(),
         onFlyToSearched: flyToSearched,
       },

@@ -84,7 +84,7 @@ function App() {
         <LayerPanel visibility={visibility} status={layerStatus} onToggle={toggle} />
         <DronePanel {...drone.panel} />
       </aside>
-      <DroneHud info={drone.hud} />
+      <DroneHud info={drone.hud} collision={drone.collision} />
       {tilesStatus?.state === 'loading' && <div className="banner banner-info">Loading 3D Toronto…</div>}
       {tilesStatus?.state === 'error' && (
         <div className="banner">

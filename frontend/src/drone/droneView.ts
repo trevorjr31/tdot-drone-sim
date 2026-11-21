@@ -22,6 +22,7 @@ import {
 } from 'cesium'
 import { TORONTO_GEOID_OFFSET_M } from '../config'
 import { distanceM } from '../places/geo'
+import { crashState, type CrashSite } from './crash'
 import { lerpAngleDeg, StateBuffer } from './interpolate'
 import type { CameraMode, DroneSource, DroneState } from './types'
 
@@ -39,6 +40,8 @@ const POSE_REUSE_MS = 5
 const NORTH_WEST_UP = Transforms.localFrameToFixedFrameGenerator('north', 'west')
 
 export type FlyToTarget = { lat: number; lon: number; label: string }
+
+export type { CrashSite } from './crash'
 
 /** Within this distance (and nearly stopped) the target counts as reached. */
 const TARGET_REACHED_M = 5
@@ -86,6 +89,7 @@ export class DroneView {
   private readonly hudListeners = new Set<(h: HudInfo | null) => void>()
   private readonly targetListeners = new Set<(t: FlyToTarget | null) => void>()
   private target: FlyToTarget | null = null
+  private crashSite: { site: CrashSite; at: number } | null = null
   private readonly targetPosition = new Cartesian3()
   /** targetPosition is valid for the current frame (computed with the pose). */
   private hasTargetPosition = false
@@ -142,6 +146,39 @@ export class DroneView {
     return () => void this.hudListeners.delete(listener)
   }
 
+  /**
+   * The drone hit a building: from now on draw it falling from the impact point
+   * (tumbling) and lying at the foot of the wall, instead of where the source says.
+   * PX4's physics doesn't know about the building, so its own position would be inside it.
+   */
+  crash(site: CrashSite) {
+    // Land on what's actually below in the 3D scene (e.g. a podium roof), not the street
+    // level from the City data, which could be inside a lower part of the building.
+    const exclude = [...this.parts.map((p) => p.entity), ...this.others]
+    const below = this.viewer.scene.sampleHeightSupported
+      ? this.viewer.scene.sampleHeight(Cartographic.fromDegrees(site.lon, site.lat), exclude)
+      : undefined
+    if (below !== undefined) {
+      const belowAmslM = below - TORONTO_GEOID_OFFSET_M
+      if (belowAmslM < site.altAmslM - 0.5) site = { ...site, groundAmslM: belowAmslM }
+    }
+    this.crashSite = { site, at: performance.now() }
+    this.target = null
+    for (const listener of this.targetListeners) listener(null)
+    this.poseAt = -Infinity
+  }
+
+  clearCrash() {
+    this.crashSite = null
+    this.buffer.clear()
+    this.clearTrail()
+    this.poseAt = -Infinity
+  }
+
+  get crashed() {
+    return this.crashSite !== null
+  }
+
   /** Show where the drone is flying to; cleared automatically on arrival. */
   setTarget(target: FlyToTarget | null) {
     this.target = target
@@ -194,7 +231,8 @@ export class DroneView {
     if (now - this.poseAt < POSE_REUSE_MS) return
     this.poseAt = now
 
-    const state = this.buffer.sample(now)
+    const live = this.buffer.sample(now)
+    const state = this.crashSite ? crashState(this.crashSite.site, now - this.crashSite.at, live) : live
     this.current = state
     this.hasPose = state !== null
     if (!state) return
@@ -239,13 +277,13 @@ export class DroneView {
       return
     }
 
-    // Trail: a point every TRAIL_INTERVAL_MS of flight time while airborne.
-    if (state.inAir && state.timeMs - this.lastTrailAt >= TRAIL_INTERVAL_MS) {
+    // Trail: a point every TRAIL_INTERVAL_MS of flight time while airborne (not while falling).
+    if (!this.crashSite && state.inAir && state.timeMs - this.lastTrailAt >= TRAIL_INTERVAL_MS) {
       this.trail.push(Cartesian3.clone(this.dronePosition))
       if (this.trail.length > TRAIL_MAX_POINTS) this.trail.shift()
       this.lastTrailAt = state.timeMs
     }
-    if (state.timeMs < this.lastTrailAt) this.clearTrail() // source restarted
+    if (!this.crashSite && state.timeMs < this.lastTrailAt) this.clearTrail() // source restarted
 
     this.updateCamera(state, dt)
 

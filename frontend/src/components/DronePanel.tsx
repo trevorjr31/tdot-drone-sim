@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
-import type { BridgeStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
+import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
 import { CAMERA_MODES, type CameraMode } from '../drone/types'
 
 export type SourceId = 'demo' | 'px4'
@@ -8,6 +8,9 @@ export type SourceId = 'demo' | 'px4'
 type Props = {
   source: SourceId
   onSource: (source: SourceId) => void
+  /** Hit a building: flying is over until Reset. */
+  crashed: boolean
+  onReset: () => void
 
   /** Demo flight. */
   demo: {
@@ -35,6 +38,7 @@ type Props = {
     /** Waiting for a click on the map. */
     picking: boolean
     searchedPlaceTitle: string | null
+    geofence: GeofenceStatus | null
     onPickAndFly: () => void
     onFlyToSearched: () => void
   }
@@ -90,7 +94,18 @@ export function DronePanel(props: Props) {
             ))}
           </div>
 
-          {props.source === 'demo' ? <DemoControls {...props.demo} inAir={props.inAir} /> : <Px4Controls {...props.px4} inAir={props.inAir} armed={props.armed} takeoffAlt={takeoffAlt} onTakeoffAlt={setTakeoffAlt} />}
+          {props.crashed ? (
+            <CrashBox
+              source={props.source}
+              resetting={props.px4.busy === 'reset'}
+              error={props.source === 'px4' ? props.px4.error : null}
+              onReset={props.onReset}
+            />
+          ) : props.source === 'demo' ? (
+            <DemoControls {...props.demo} inAir={props.inAir} />
+          ) : (
+            <Px4Controls {...props.px4} inAir={props.inAir} armed={props.armed} takeoffAlt={takeoffAlt} onTakeoffAlt={setTakeoffAlt} />
+          )}
 
           <div className="drone-panel__label">
             Camera <kbd className="layer-row__key">C</kbd>
@@ -119,6 +134,23 @@ export function DronePanel(props: Props) {
         </div>
       )}
     </section>
+  )
+}
+
+function CrashBox({ source, resetting, error, onReset }: { source: SourceId; resetting: boolean; error: string | null; onReset: () => void }) {
+  return (
+    <div className="drone-panel__crash" role="alert">
+      <strong>Crashed into a building</strong>
+      <span>
+        {source === 'px4'
+          ? 'Motors cut. Reset restarts PX4 with the drone back at home (takes a few seconds).'
+          : 'Reset puts the demo drone back at home.'}
+      </span>
+      <button type="button" className="btn btn--primary" onClick={onReset} disabled={resetting}>
+        {resetting ? 'Resetting…' : 'Reset drone'}
+      </button>
+      {error && <span className="drone-panel__crash-error">{error}</span>}
+    </div>
   )
 }
 
@@ -152,6 +184,13 @@ function Px4Controls(p: Props['px4'] & { inAir: boolean; armed: boolean; takeoff
         {STATUS_TEXT[p.status]}
         {ready && p.version ? ` · PX4 ${p.version}` : ''}
       </div>
+      {ready && p.geofence && (
+        <div className={`drone-panel__fence${p.geofence.uploaded ? '' : ' is-missing'}`} title={p.geofence.error ?? undefined}>
+          {p.geofence.uploaded
+            ? `Geofence: City of Toronto boundary · ${p.geofence.ceilingM.toFixed(0)} m ceiling · breach returns home`
+            : `No geofence: ${p.geofence.error ?? 'not uploaded'}`}
+        </div>
+      )}
       {p.status === 'bridge-offline' && (
         <div className="drone-panel__hint">
           Start it with <code>docker compose up -d</code> ({p.url})

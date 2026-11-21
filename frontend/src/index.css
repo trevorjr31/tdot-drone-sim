@@ -704,3 +704,60 @@ body,
   font: 11px/16px ui-monospace, Consolas, monospace;
   text-align: center;
 }
+
+.hud__readout.is-caution .hud__value {
+  color: var(--panel-accent);
+}
+
+.hud__collision {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border: 1px solid rgba(230, 57, 70, 0.7);
+  border-radius: 6px;
+  background: rgba(230, 57, 70, 0.32);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  animation: hud-flash 0.6s ease-in-out 3;
+}
+
+@keyframes hud-flash {
+  50% {
+    background: rgba(230, 57, 70, 0.7);
+  }
+}
+
+.drone-panel__fence {
+  color: #a8d5bf;
+  font-size: 11px;
+}
+
+.drone-panel__fence.is-missing {
+  color: var(--panel-accent);
+}
+
+.hud__collision--crash {
+  background: rgba(150, 20, 30, 0.75);
+}
+
+.drone-panel__crash {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(230, 57, 70, 0.7);
+  border-radius: 7px;
+  background: rgba(230, 57, 70, 0.18);
+  color: #ffd2d6;
+  font-size: 12px;
+}
+
+.drone-panel__crash strong {
+  color: #fff;
+  font-size: 13px;
+}
+
+.drone-panel__crash-error {
+  color: var(--panel-accent);
+}

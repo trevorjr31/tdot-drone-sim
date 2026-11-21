@@ -4,11 +4,12 @@ PX4 ⇄ browser bridge.
 Browsers can't speak MAVLink over UDP, so this service connects to PX4 with
 MAVSDK and exposes a WebSocket the React app talks to:
 
-  server → client  {"type": "status", "px4Connected": bool, "px4Version": str|null}
+  server → client  {"type": "status", "px4Connected": bool, "px4Version": str|null, "geofence": {...}}
                    {"type": "state",  "state": {...DroneState...}}        (RATE_HZ)
                    {"type": "ack",    "id": str, "ok": bool, "error": str|null}
                    {"type": "notice", "level": "error", "message": str}   (e.g. offboard refused)
-  client → server  {"type": "command", "id": str, "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto",
+  client → server  {"type": "command", "id": str,
+                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset",
                     "altitudeM"?: number, "lat"?: number, "lon"?: number, "relAltM"?: number}
                    {"type": "velocity", "forwardMs": n, "rightMs": n, "downMs": n, "yawRateDegS": n}
                      Keyboard flying: body-frame velocity, sent ~10 Hz while keys are held.
@@ -17,6 +18,16 @@ MAVSDK and exposes a WebSocket the React app talks to:
                      Hold mode after OFFBOARD_IDLE_S (e.g. the browser tab was closed).
 
 The state matches the frontend's DroneState (src/drone/types.ts) field for field.
+
+Crash and reset: PX4 doesn't know about buildings, so the app detects collisions and
+sends "crash": the bridge cuts the motors (flight termination) and PX4's physics drops
+the drone. "reset" restarts PX4 (MAVLink shutdown; Docker's restart policy starts it
+again), which puts the drone back on the ground at home.
+
+Geofence: on every PX4 (re)connect the bridge uploads the City of Toronto boundary
+(FENCE_FILE, produced by `npm run data`) as an inclusion fence and sets a 120 m
+ceiling above home, with PX4's Return mode as the breach action. PX4 enforces it
+itself, whether or not a browser is connected.
 """
 
 import asyncio
@@ -27,6 +38,7 @@ import os
 import time
 
 from mavsdk_grpc import System
+from mavsdk_grpc.geofence import FenceType, GeofenceData, Point, Polygon
 from mavsdk_grpc.offboard import VelocityBodyYawspeed
 from websockets.asyncio.server import ServerConnection, broadcast, serve
 from websockets.exceptions import ConnectionClosed
@@ -46,6 +58,11 @@ MAX_YAW_RATE_DEG_S = 90.0
 OFFBOARD_RATE_HZ = 20.0  # PX4 needs setpoints faster than 2 Hz or it fails safe
 VELOCITY_STALE_S = 0.5  # no fresh input for this long → hover
 OFFBOARD_IDLE_S = 3.0  # no input for this long → leave offboard, PX4 Hold
+# Geofence (see module docstring).
+FENCE_FILE = os.environ.get("FENCE_FILE", "/data/boundary-fence.geojson")
+FENCE_CEILING_M = float(os.environ.get("FENCE_CEILING_M", "120"))
+FENCE_ACTION_RETURN = 3  # PX4 GF_ACTION: 1 warning, 2 hold, 3 return, 4 terminate, 5 land
+PX4_MAX_FENCE_POINTS = 63  # PX4 dataman holds 64 fence entries (one is bookkeeping)
 # Flight-mode telemetry lags a mode switch; ignore "not offboard" reports this soon after starting.
 OFFBOARD_MODE_GRACE_S = 1.5
 
@@ -92,6 +109,11 @@ class Bridge:
         self.velocity = (0.0, 0.0, 0.0, 0.0)
         self.velocity_at = 0.0
         self.offboard_started_at = 0.0
+        # PX4 left offboard on its own (geofence, failsafe, …). Restarting offboard while keys are
+        # still held would count as a pilot takeover and cancel PX4's failsafe, so wait for a release.
+        self.offboard_blocked = False
+        self.resetting = False
+        self.geofence = {"source": None, "points": 0, "ceilingM": FENCE_CEILING_M, "uploaded": False, "error": None}
         self.s = {
             "lat": 0.0,
             "lon": 0.0,
@@ -164,12 +186,45 @@ class Bridge:
         except Exception:  # noqa: BLE001
             self.px4_version = None
         log.info("PX4 connected (version %s)", self.px4_version)
+        asyncio.create_task(self.upload_geofence())
         t = self.drone.telemetry
         for setter in (t.set_rate_position, t.set_rate_attitude_euler, t.set_rate_velocity_ned):
             try:
                 await setter(RATE_HZ)
             except Exception as e:  # noqa: BLE001 - some rates aren't settable in every PX4 build
                 log.debug("Could not set telemetry rate: %s", e)
+
+    def load_fence_points(self) -> list[tuple[float, float]]:
+        """Outer ring of the fence polygon as (lat, lon), without GeoJSON's repeated closing point."""
+        with open(FENCE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        geom = data["features"][0]["geometry"]
+        ring = geom["coordinates"][0] if geom["type"] == "Polygon" else max(geom["coordinates"], key=lambda p: len(p[0]))[0]
+        if len(ring) > 1 and ring[0] == ring[-1]:
+            ring = ring[:-1]
+        if len(ring) > PX4_MAX_FENCE_POINTS:
+            raise ValueError(f"fence has {len(ring)} points; PX4 holds at most {PX4_MAX_FENCE_POINTS}")
+        return [(lat, lon) for lon, lat, *_ in ring]
+
+    async def upload_geofence(self) -> None:
+        g = self.geofence
+        g.update(uploaded=False, error=None)
+        try:
+            points = self.load_fence_points()
+            await self.drone.geofence.upload_geofence(
+                GeofenceData(polygons=[Polygon([Point(lat, lon) for lat, lon in points], FenceType.INCLUSION)], circles=[])
+            )
+            await self.drone.param.set_param_float("GF_MAX_VER_DIST", FENCE_CEILING_M)
+            await self.drone.param.set_param_int("GF_ACTION", FENCE_ACTION_RETURN)
+            g.update(source=os.path.basename(FENCE_FILE), points=len(points), uploaded=True)
+            log.info("Geofence uploaded: %d-point City of Toronto boundary, %.0f m ceiling, breach → Return", len(points), FENCE_CEILING_M)
+        except FileNotFoundError:
+            g["error"] = f"{FENCE_FILE} not found (run `npm run data` in frontend/)"
+            log.warning("No geofence: %s", g["error"])
+        except Exception as e:  # noqa: BLE001
+            g["error"] = str(e)
+            log.warning("Geofence upload failed: %s", e)
+        self.broadcast_status()
 
     async def watch_position(self) -> None:
         async for p in self.drone.telemetry.position():
@@ -207,8 +262,20 @@ class Bridge:
             # PX4 left offboard on its own (failsafe, another ground station, …): stop streaming.
             settled = time.monotonic() - self.offboard_started_at > OFFBOARD_MODE_GRACE_S
             if self.offboard_active and not self.offboard_starting and settled and mode.name != "OFFBOARD":
-                log.info("PX4 left offboard (now %s)", mode.name)
+                log.info("PX4 left offboard on its own (now %s); keyboard paused until keys are released", mode.name)
                 self.offboard_active = False
+                self.offboard_blocked = True
+                broadcast(
+                    self.clients,
+                    json.dumps(
+                        {
+                            "type": "notice",
+                            "level": "error",
+                            "message": f"PX4 took over ({self.s['flightMode']}), e.g. geofence or failsafe. "
+                            "Release the keys, then press again to fly.",
+                        }
+                    ),
+                )
 
     async def watch_home(self) -> None:
         async for h in self.drone.telemetry.home():
@@ -216,12 +283,18 @@ class Bridge:
 
     async def run_command(self, action: str, msg: dict) -> None:
         a = self.drone.action
-        # Any explicit command takes over from keyboard flying.
+        # Any explicit command takes over from keyboard flying (a deliberate switch, so no block).
         self.offboard_active = False
+        self.offboard_blocked = False
         if action == "takeoff":
             alt = float(msg.get("altitudeM") or DEFAULT_TAKEOFF_ALT_M)
             alt = max(2.0, min(MAX_TAKEOFF_ALT_M, alt))
             await a.set_takeoff_altitude(alt)
+            if not self.s["armed"] and self.s["flightMode"] == "Offboard":
+                # Landed while keyboard flying: PX4 won't arm in offboard once the setpoint
+                # stream has stopped ("offboard signal lost"), so switch to Hold first.
+                await a.hold()
+                await asyncio.sleep(0.5)
             if not self.s["armed"]:
                 await a.arm()
             await a.takeoff()
@@ -235,6 +308,12 @@ class Bridge:
             await a.arm()
         elif action == "disarm":
             await a.disarm()
+        elif action == "crash":
+            # Hit a building: motors off, like a real crash. PX4's physics drops the drone.
+            if self.s["armed"]:
+                await a.kill()
+        elif action == "reset":
+            await self.reset_px4()
         elif action == "goto":
             if not self.s["inAir"]:
                 raise ValueError("Take off first")
@@ -246,6 +325,32 @@ class Bridge:
             await a.goto_location(lat, lon, home["altAmslM"] + rel, math.nan)
         else:
             raise ValueError(f"Unknown action: {action}")
+
+    async def reset_px4(self) -> None:
+        """Restart PX4 so the drone is back on the ground at home (e.g. after a crash)."""
+        if self.resetting:
+            raise ValueError("Already resetting")
+        self.resetting = True
+        self.broadcast_status()
+        try:
+            if self.s["armed"]:
+                await self.drone.action.kill()
+                await asyncio.sleep(1)
+            requested = time.monotonic()
+            # PX4 SITL can't reboot itself, but it can shut down; Docker then starts it again.
+            await self.drone.action.shutdown()
+            log.info("Reset: PX4 shutting down, waiting for it to come back")
+            await asyncio.sleep(2)
+            deadline = requested + 60
+            while self.last_telemetry < requested + 2:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("PX4 did not come back within 60 s (is its container's restart policy set?)")
+                await asyncio.sleep(0.5)
+            await self.on_px4_connected()  # fresh PX4: telemetry rates + geofence again
+            log.info("Reset: PX4 is back")
+        finally:
+            self.resetting = False
+            self.broadcast_status()
 
     # --- keyboard flying (offboard velocity) ----------------------------------
 
@@ -261,7 +366,15 @@ class Bridge:
             num("downMs", MAX_CLIMB_MS),
             num("yawRateDegS", MAX_YAW_RATE_DEG_S),
         )
-        self.velocity_at = time.monotonic()
+        now = time.monotonic()
+        idle_before = now - self.velocity_at
+        self.velocity_at = now
+        if self.offboard_blocked:
+            # Unblock on release: zeros (the app sends them on key-up) or a gap in input.
+            if not any(self.velocity) or idle_before > VELOCITY_STALE_S:
+                self.offboard_blocked = False
+            if self.offboard_blocked or not any(self.velocity):
+                return
         # Only real input takes control. The app sends a few zeros when keys are released;
         # those must not restart offboard and override a command (e.g. a fly-to) sent meanwhile.
         if not self.offboard_active and not self.offboard_starting and any(self.velocity):
@@ -296,6 +409,7 @@ class Bridge:
                 if idle > OFFBOARD_IDLE_S:
                     log.info("Keyboard flying: no input for %.0f s, switching to Hold", OFFBOARD_IDLE_S)
                     self.offboard_active = False
+                    self.offboard_blocked = False
                     await self.drone.action.hold()
                     break
                 v = self.velocity if idle <= VELOCITY_STALE_S else (0.0, 0.0, 0.0, 0.0)
@@ -316,7 +430,15 @@ class Bridge:
     # --- browser side ---------------------------------------------------------
 
     def status_message(self) -> str:
-        return json.dumps({"type": "status", "px4Connected": self.px4_connected, "px4Version": self.px4_version})
+        return json.dumps(
+            {
+                "type": "status",
+                "px4Connected": self.px4_connected,
+                "px4Version": self.px4_version,
+                "geofence": self.geofence,
+                "resetting": self.resetting,
+            }
+        )
 
     def broadcast_status(self) -> None:
         broadcast(self.clients, self.status_message())

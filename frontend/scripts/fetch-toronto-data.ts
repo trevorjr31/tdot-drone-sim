@@ -4,6 +4,7 @@
  *
  *   npm run data            # download (if not cached) and convert
  *   npm run data -- --refresh   # force fresh downloads
+ *   npm run data -- --only=boundary-fence   # just some datasets (comma-separated ids; used by CI)
  *
  * Why a script instead of fetching in the browser: the City's CKAN API sends no
  * CORS headers, so browsers block direct requests. Preparing files ahead of time
@@ -31,6 +32,8 @@ const CACHE_DIR = path.join(ROOT, '.data-cache')
 const OUT_DIR = path.join(ROOT, 'public', 'data', 'toronto')
 const MAPSHAPER = path.join(ROOT, 'node_modules', 'mapshaper', 'bin', 'mapshaper')
 const REFRESH = process.argv.includes('--refresh')
+const ONLY = process.argv.find((a) => a.startsWith('--only='))?.slice('--only='.length).split(',').filter(Boolean)
+const wanted = (id: string) => !ONLY || ONLY.includes(id)
 
 type CkanResource = { id: string; name: string; format: string; url: string; last_modified?: string }
 type CkanPackage = { name: string; title: string; last_refreshed?: string; resources: CkanResource[] }
@@ -56,6 +59,15 @@ const DATASETS: Dataset[] = [
     cacheExt: 'zip',
     // Only the outline matters: merge into one shape and replace the attributes with a name.
     mapshaper: ['-proj', 'wgs84', '-dissolve', '-each', 'name="City of Toronto"', '-simplify', 'dp', 'interval=2'],
+  },
+  {
+    // The same boundary, simplified to fit PX4's geofence (max 64 points): ~50 points,
+    // within ~500 m of the true line. The bridge uploads it to PX4 as an inclusion fence.
+    id: 'boundary-fence',
+    packageId: 'regional-municipal-boundary',
+    pickResource: (r) => r.format.toUpperCase() === 'SHP',
+    cacheExt: 'zip',
+    mapshaper: ['-proj', 'wgs84', '-dissolve', '-each', 'name="City of Toronto (geofence)"', '-simplify', 'dp', 'interval=500'],
   },
   {
     id: 'neighbourhoods',
@@ -261,8 +273,14 @@ async function main() {
   await mkdir(OUT_DIR, { recursive: true })
 
   const datasets = []
-  for (const ds of DATASETS) datasets.push(await processDataset(ds))
-  datasets.push(await processMassing())
+  for (const ds of DATASETS) if (wanted(ds.id)) datasets.push(await processDataset(ds))
+  if (wanted('massing')) datasets.push(await processMassing())
+
+  if (ONLY) {
+    // Partial run: leave the full manifest from the last complete run alone.
+    console.log(`\n✓ Done (only: ${ONLY.join(', ')})`)
+    return
+  }
 
   const manifest = {
     generatedAt: new Date().toISOString(),

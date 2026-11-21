@@ -59,6 +59,8 @@ export class KeyboardFlight {
   private readonly onActiveChange: (active: boolean) => void
   private readonly pressed = new Set<string>()
   private enabled = false
+  /** After interrupt(): ignore held/auto-repeated keys until a fresh press. */
+  private suspended = false
   private timer: number | undefined
   private releaseLeft = 0
 
@@ -77,6 +79,12 @@ export class KeyboardFlight {
     if (!enabled) this.releaseAll()
   }
 
+  /** Stop sending now (e.g. after a collision); held keys are ignored until pressed again. */
+  interrupt() {
+    this.suspended = true
+    this.releaseAll()
+  }
+
   get active() {
     return this.pressed.size > 0
   }
@@ -93,6 +101,10 @@ export class KeyboardFlight {
     if (!this.enabled || !FLIGHT_KEYS.has(e.code) || e.metaKey || e.ctrlKey || e.altKey) return
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
     e.preventDefault() // Space/arrows would otherwise scroll or press focused buttons
+    if (this.suspended) {
+      if (e.repeat) return // still the same held key
+      this.suspended = false
+    }
     if (this.pressed.has(e.code)) return
     const wasActive = this.active
     this.pressed.add(e.code)

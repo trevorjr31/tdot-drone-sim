@@ -16,7 +16,7 @@ export type BridgeStatus =
   | 'px4-offline'
   | 'connected'
 
-export type Px4Command = 'takeoff' | 'land' | 'rtl' | 'hold' | 'arm' | 'disarm' | 'goto'
+export type Px4Command = 'takeoff' | 'land' | 'rtl' | 'hold' | 'arm' | 'disarm' | 'goto' | 'crash' | 'reset'
 
 export type Px4CommandParams = {
   /** takeoff: height above launch. */
@@ -27,8 +27,16 @@ export type Px4CommandParams = {
   relAltM?: number
 }
 
+export type GeofenceStatus = {
+  source: string | null
+  points: number
+  ceilingM: number
+  uploaded: boolean
+  error: string | null
+}
+
 type ServerMessage =
-  | { type: 'status'; px4Connected: boolean; px4Version: string | null }
+  | { type: 'status'; px4Connected: boolean; px4Version: string | null; geofence?: GeofenceStatus }
   | { type: 'state'; state: DroneState }
   | { type: 'ack'; id: string; ok: boolean; error: string | null }
   | { type: 'notice'; level: string; message: string }
@@ -76,6 +84,7 @@ export class Px4BridgeSource implements DroneSource {
   private _latest: DroneState | null = null
   private _status: BridgeStatus = 'idle'
   private _px4Version: string | null = null
+  private _geofence: GeofenceStatus | null = null
   private readonly listeners = new Set<(s: DroneState) => void>()
   private readonly statusListeners = new Set<(s: BridgeStatus) => void>()
   private readonly noticeListeners = new Set<(message: string) => void>()
@@ -98,6 +107,11 @@ export class Px4BridgeSource implements DroneSource {
 
   get px4Version() {
     return this._px4Version
+  }
+
+  /** PX4 geofence state reported by the bridge (City boundary + height ceiling). */
+  get geofence() {
+    return this._geofence
   }
 
   subscribe(listener: (s: DroneState) => void) {
@@ -191,6 +205,7 @@ export class Px4BridgeSource implements DroneSource {
     if (!msg) return
     if (msg.type === 'status') {
       this._px4Version = msg.px4Version
+      this._geofence = msg.geofence ?? null
       this.setStatus(msg.px4Connected ? 'connected' : 'px4-offline')
     } else if (msg.type === 'state') {
       this._latest = msg.state

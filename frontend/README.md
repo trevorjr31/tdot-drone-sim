@@ -30,6 +30,7 @@ in `.data-cache/`; pass `-- --refresh` to re-download.
 |---|---|
 | City boundary | `boundary.geojson` |
 | Neighbourhoods (158) | `neighbourhoods.geojson` |
+| City boundary for PX4's geofence (~50 points) | `boundary-fence.geojson` |
 | 3D Massing (~430k buildings, newest year) | `massing/{col}_{row}.json` in ~1 km grid tiles + `massing/index.json` (~130 MB total) |
 
 The massing step takes ~20 s and needs a few GB of RAM. The grid is defined once in
@@ -89,7 +90,20 @@ The chosen source is remembered in this browser.
   and a warning above Transport Canada's 122 m (400 ft) limit.
 - The model is drawn 4× real size so it's visible from the chase camera; a red dot marks
   it from far away, a dashed line drops to the ground, and a yellow trail shows the path.
-- No collisions yet: the drone can pass through buildings (chunk 4e).
+- **Building collisions**: every state is checked against City massing footprints near the
+  drone (tiles load around it whether or not the massing layer is shown). Inside a
+  footprint and below its roof (the building's highest point), or within 2.5 m of its wall,
+  is a **crash**. The impact point is where the drone's path met the wall (found by
+  bisecting between the last two samples), so it never goes inside. The drone tumbles and
+  falls from there onto whatever is below in the 3D scene and lies there as a wreck; with
+  PX4 the motors are cut (flight termination). **Reset drone** in the panel restarts PX4
+  with the drone back at home (or resets the demo).
+
+  The 2.5 m margin covers half the drawn drone (it's 4× size) plus the usual 1–2 m
+  difference between City footprints and Google's 3D buildings. The HUD's **Building**
+  readout gives the distance to the nearest building at the drone's height (amber under
+  15 m, red under 5 m). PX4's own physics still doesn't know about buildings.
+- With PX4 selected, the panel shows the geofence status (see the top-level README).
 
 In dev builds `window.viewer` and `window.tdot` (`{ demo, droneView }`) are available in
 the browser console for debugging.

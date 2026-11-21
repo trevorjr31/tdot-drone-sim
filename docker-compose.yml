@@ -18,13 +18,16 @@ services:
       PX4_HOME_LAT: "43.65255"
       PX4_HOME_LON: "-79.38330"
       PX4_HOME_ALT: "92"
-    # The bridge shares this container's network (PX4 only sends MAVLink to localhost),
-    # so the bridge's WebSocket port is published here. Bound to localhost only.
-    ports:
-      - "127.0.0.1:8765:8765"
+    # PX4 only sends MAVLink to localhost, so it shares the bridge's network. The bridge owns
+    # it (not the other way round) so PX4 can restart (Reset after a crash) without taking
+    # the bridge's network down with it.
+    network_mode: "service:bridge"
+    depends_on:
+      - bridge
     # PX4's interactive console needs a TTY to stay up when detached.
     stdin_open: true
     tty: true
+    # Also how Reset works: the bridge asks PX4 to reboot, PX4 exits, Docker starts it again at home.
     restart: unless-stopped
 
   bridge:
@@ -32,11 +35,16 @@ services:
       context: ./sim/bridge
     image: tdot/px4-bridge:dev
     container_name: tdot-bridge
-    network_mode: "service:px4"
-    depends_on:
-      - px4
+    # WebSocket for the app, bound to localhost only.
+    ports:
+      - "127.0.0.1:8765:8765"
+    # City of Toronto boundary for PX4's geofence, from `npm run data` (read-only).
+    volumes:
+      - ./frontend/public/data/toronto:/data:ro
     environment:
       MAVLINK_URL: udpin://0.0.0.0:14540
+      FENCE_FILE: /data/boundary-fence.geojson
+      FENCE_CEILING_M: "120"
       WS_PORT: "8765"
       STATE_RATE_HZ: "20"
     restart: unless-stopped
