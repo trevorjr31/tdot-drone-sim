@@ -43,6 +43,21 @@ against Google's 3D Tiles.
 The app reads data only through [src/data/torontoData.ts](src/data/torontoData.ts),
 so it can later point at a backend instead.
 
+## Search
+
+The search box (top-left, or press **/**) finds addresses, intersections, landmarks
+and the City's 158 neighbourhoods:
+
+- Neighbourhoods and saved places match instantly as you type (local data).
+- Addresses and landmarks come from Google's geocoder via Cesium ion (required by
+  Google's terms when using its 3D Tiles), after a short pause or on Enter. Queries are
+  pinned to Toronto; results far outside it are dropped, and ones outside the City
+  boundary are tagged.
+- Results fly to an angled view and drop a pin; neighbourhoods are selected instead.
+- Saved places live in [src/places/presets.ts](src/places/presets.ts). Most are
+  defined by name/address and looked up once per browser; recent searches are remembered.
+- The Home button returns to the downtown view.
+
 ## Controls
 
 Left-drag pans, right-drag/scroll zooms, Ctrl+drag tilts. Click a neighbourhood or

@@ -12,12 +12,14 @@ import {
   type CustomDataSource,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
+import { PlaceNavigator } from '../cesium/placeNavigation'
 import { loadPhotorealisticTiles } from '../cesium/photorealisticTiles'
 import { loadBoundary, loadManifest, loadMassingIndex, loadNeighbourhoods } from '../data/torontoData'
 import type { LayerId, LayerStatus, LayerVisibility } from '../layers/layerState'
 import { installMassingPicking, MassingLayer } from '../layers/massingLayer'
 import { createBoundaryLayer, createNeighbourhoodsLayer } from '../layers/torontoLayers'
 import { config, TORONTO_HOME } from '../config'
+import type { MapApi } from '../places/types'
 
 export type TilesStatus =
   | { state: 'loading'; source: TilesSource }
@@ -30,6 +32,8 @@ type Props = {
   visibility: LayerVisibility
   onTilesStatus?: (status: TilesStatus) => void
   onLayerStatus?: (layer: LayerId, status: LayerStatus, message?: string) => void
+  /** Called once the map can be searched and navigated (and with null when it goes away). */
+  onMapReady?: (api: MapApi | null) => void
 }
 
 /** Cesium objects behind each toggleable layer, filled in as they finish loading. */
@@ -53,7 +57,7 @@ function applyVisibility(h: LayerHandles, v: LayerVisibility) {
   if (h.massing) h.massing.show = v.massing
 }
 
-export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus }: Props) {
+export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const handles = useRef<LayerHandles>({})
   // Keep the latest props without re-running the setup effect (which would rebuild the viewer).
@@ -63,6 +67,8 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus }: Props
   onStatusRef.current = onTilesStatus
   const onLayerStatusRef = useRef(onLayerStatus)
   onLayerStatusRef.current = onLayerStatus
+  const onMapReadyRef = useRef(onMapReady)
+  onMapReadyRef.current = onMapReady
 
   // Apply toggles whenever they change.
   useEffect(() => applyVisibility(handles.current, visibility), [visibility])
@@ -112,6 +118,14 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus }: Props
       duration: 3,
     })
 
+    // Search + fly-to. The Home button flies to the downtown view instead of the whole Earth.
+    const navigator = new PlaceNavigator(viewer)
+    viewer.homeButton.viewModel.command.beforeExecute.addEventListener((e: { cancel: boolean }) => {
+      e.cancel = true
+      navigator.flyHome()
+    })
+    onMapReadyRef.current?.(navigator)
+
     // Dev only: lets you poke at the scene from the browser console (window.viewer).
     if (import.meta.env.DEV) (window as unknown as { viewer: Viewer }).viewer = viewer
 
@@ -153,6 +167,8 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus }: Props
         void viewer.dataSources.add(boundaryLayer)
         ready('neighbourhoods', () => (h.neighbourhoods = neighbourhoodsLayer))
         ready('boundary', () => (h.boundary = boundaryLayer))
+        navigator.setNeighbourhoods(neighbourhoods, neighbourhoodsLayer)
+        navigator.setBoundary(boundary)
         // The Open Government Licence – Toronto requires attribution.
         viewer.creditDisplay.addStaticCredit(
           new Credit(`<a href="https://open.toronto.ca/" target="_blank" rel="noopener">${manifest.attribution}</a>`),
@@ -183,6 +199,7 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus }: Props
 
     // React StrictMode mounts effects twice in dev, so always clean up.
     return () => {
+      onMapReadyRef.current?.(null)
       uninstallPicking()
       h.massing?.destroy()
       if (!viewer.isDestroyed()) viewer.destroy()

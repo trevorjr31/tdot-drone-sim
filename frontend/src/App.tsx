@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { CesiumViewer, type TilesStatus } from './components/CesiumViewer'
 import { LayerPanel } from './components/LayerPanel'
+import { SearchBox } from './components/SearchBox'
+import type { MapApi } from './places/types'
 import { LAYERS, loadVisibility, saveVisibility, type LayerId, type LayerStatus, type LayerVisibility } from './layers/layerState'
 
 type LayerStatuses = Partial<Record<LayerId, { status: LayerStatus; message?: string }>>
@@ -9,6 +11,7 @@ function App() {
   const [tilesStatus, setTilesStatus] = useState<TilesStatus | null>(null)
   const [visibility, setVisibility] = useState<LayerVisibility>(loadVisibility)
   const [layerStatus, setLayerStatus] = useState<LayerStatuses>({})
+  const [mapApi, setMapApi] = useState<MapApi | null>(null)
 
   useEffect(() => saveVisibility(visibility), [visibility])
 
@@ -37,8 +40,16 @@ function App() {
 
   return (
     <>
-      <CesiumViewer visibility={visibility} onTilesStatus={setTilesStatus} onLayerStatus={onLayerStatus} />
-      <LayerPanel visibility={visibility} status={layerStatus} onToggle={toggle} />
+      <CesiumViewer
+        visibility={visibility}
+        onTilesStatus={setTilesStatus}
+        onLayerStatus={onLayerStatus}
+        onMapReady={setMapApi}
+      />
+      <aside className="sidebar">
+        <SearchBox api={mapApi} />
+        <LayerPanel visibility={visibility} status={layerStatus} onToggle={toggle} />
+      </aside>
       {tilesStatus?.state === 'loading' && <div className="banner banner-info">Loading 3D Toronto…</div>}
       {tilesStatus?.state === 'error' && (
         <div className="banner">
