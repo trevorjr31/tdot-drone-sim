@@ -61,18 +61,15 @@ and the City's 158 neighbourhoods:
 
 ## Drone
 
-The **Drone** panel (left) has two sources, both producing the same
-[`DroneState`](src/drone/types.ts):
+The drone is PX4, via the bridge: start them with `docker compose up -d` at the repo root
+(see the top-level README). The app connects on start and keeps retrying, so the bridge
+can start before or after it; the **Drone** panel shows the connection status. Override
+the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
+[`DroneState`](src/drone/types.ts).
 
-- **Demo flight**: a scripted quadcopter that takes off from Nathan Phillips Square, flies
-  west along Queen St W to Trinity Bellwoods and back, then lands (~8 min). No PX4 needed.
-- **PX4 (live)**: real PX4 telemetry via the bridge (`docker compose up -d` at the repo
-  root; see the top-level README). **Take off** (with height), **Hold**, **Return** and
-  **Land** command PX4; refusals (e.g. pre-arm checks failing) show in the panel. The
-  connection retries automatically, so the bridge can start before or after the app.
-  Override the address with `VITE_BRIDGE_URL`.
-
-  Once airborne:
+- **Take off** (with height), **Hold**, **Return** and **Land** command PX4; refusals
+  (e.g. pre-arm checks failing) show in the panel.
+- Once airborne:
   - **Keyboard flying**: **W/S** (or ↑/↓) forward/back, **A/D** slide, **←/→** (or Q/E)
     turn, **Space/Shift** up/down. The bridge puts PX4 in offboard mode and streams the
     velocity; letting go hovers, and after 3 s idle PX4 is handed back to Hold. Taking the
@@ -80,9 +77,6 @@ The **Drone** panel (left) has two sources, both producing the same
   - **Fly to**: *Pick on map* (click a point; Esc cancels) or the last search result.
     PX4 flies there at its current height; a cyan ring and dashed line mark the target
     until it arrives. *Stop* holds position.
-
-The chosen source is remembered in this browser.
-
 - **Camera**: always a chase camera on the drone. It starts behind and above it and swings
   round to stay behind as it turns; **drag** to rotate around the drone, **scroll** to zoom
   (3 m to 30 km). Your angle and zoom are kept as it flies. There's no free camera or Home
@@ -99,15 +93,15 @@ The chosen source is remembered in this browser.
   bisecting between the last two samples), so it never goes inside. The drone tumbles and
   falls from there onto whatever is below in the 3D scene and lies there as a wreck; with
   PX4 the motors are cut (flight termination). **Reset drone** in the panel restarts PX4
-  with the drone back at home (or resets the demo).
+  with the drone back at home.
 
   The 2.5 m margin covers half the drawn drone (it's 4× size) plus the usual 1–2 m
   difference between City footprints and Google's 3D buildings. The HUD's **Building**
   readout gives the distance to the nearest building at the drone's height (amber under
   15 m, red under 5 m). PX4's own physics still doesn't know about buildings.
-- With PX4 selected, the panel shows the geofence status (see the top-level README).
+- The panel shows the geofence status (see the top-level README).
 
-In dev builds `window.viewer` and `window.tdot` (`{ demo, droneView }`) are available in
+In dev builds `window.viewer` and `window.tdot` (`{ px4, droneView }`) are available in
 the browser console for debugging.
 
 ## Controls

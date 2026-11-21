@@ -2,23 +2,10 @@ import { useState } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
 
-export type SourceId = 'demo' | 'px4'
-
 type Props = {
-  source: SourceId
-  onSource: (source: SourceId) => void
   /** Hit a building: flying is over until Reset. */
   crashed: boolean
   onReset: () => void
-
-  /** Demo flight. */
-  demo: {
-    running: boolean
-    finished: boolean
-    onStart: () => void
-    onPause: () => void
-    onReset: () => void
-  }
 
   /** PX4 via the bridge. */
   px4: {
@@ -71,35 +58,8 @@ export function DronePanel(props: Props) {
 
       {open && (
         <div className="drone-panel__body">
-          <div className="segmented" role="radiogroup" aria-label="Drone source">
-            {(
-              [
-                ['demo', 'Demo flight'],
-                ['px4', 'PX4 (live)'],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                role="radio"
-                aria-checked={props.source === id}
-                className={`segmented__option${props.source === id ? ' is-active' : ''}`}
-                onClick={() => props.onSource(id)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
           {props.crashed ? (
-            <CrashBox
-              source={props.source}
-              resetting={props.px4.busy === 'reset'}
-              error={props.source === 'px4' ? props.px4.error : null}
-              onReset={props.onReset}
-            />
-          ) : props.source === 'demo' ? (
-            <DemoControls {...props.demo} inAir={props.inAir} />
+            <CrashBox resetting={props.px4.busy === 'reset'} error={props.px4.error} onReset={props.onReset} />
           ) : (
             <Px4Controls {...props.px4} inAir={props.inAir} armed={props.armed} takeoffAlt={takeoffAlt} onTakeoffAlt={setTakeoffAlt} />
           )}
@@ -115,40 +75,16 @@ export function DronePanel(props: Props) {
   )
 }
 
-function CrashBox({ source, resetting, error, onReset }: { source: SourceId; resetting: boolean; error: string | null; onReset: () => void }) {
+function CrashBox({ resetting, error, onReset }: { resetting: boolean; error: string | null; onReset: () => void }) {
   return (
     <div className="drone-panel__crash" role="alert">
       <strong>Crashed into a building</strong>
-      <span>
-        {source === 'px4'
-          ? 'Motors cut. Reset restarts PX4 with the drone back at home (takes a few seconds).'
-          : 'Reset puts the demo drone back at home.'}
-      </span>
+      <span>Motors cut. Reset restarts PX4 with the drone back at home (takes a few seconds).</span>
       <button type="button" className="btn btn--primary" onClick={onReset} disabled={resetting}>
         {resetting ? 'Resetting…' : 'Reset drone'}
       </button>
       {error && <span className="drone-panel__crash-error">{error}</span>}
     </div>
-  )
-}
-
-function DemoControls({ running, finished, inAir, onStart, onPause, onReset }: Props['demo'] & { inAir: boolean }) {
-  const startLabel = finished ? 'Fly again' : running ? 'Flying…' : inAir ? 'Resume' : 'Start flight'
-  return (
-    <>
-      <div className="drone-panel__source">Scripted route along Queen St W (no PX4 needed)</div>
-      <div className="drone-panel__buttons">
-        <button type="button" className="btn btn--primary" onClick={onStart} disabled={running}>
-          {startLabel}
-        </button>
-        <button type="button" className="btn" onClick={onPause} disabled={!running}>
-          Pause
-        </button>
-        <button type="button" className="btn" onClick={onReset} disabled={!running && !inAir && !finished}>
-          Reset
-        </button>
-      </div>
-    </>
   )
 }
 

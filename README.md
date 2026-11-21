@@ -36,9 +36,9 @@ docker compose logs -f       # PX4 and bridge output
 docker compose down          # stop
 ```
 
-Then in the app's **Drone** panel choose **PX4 (live)**: the status turns green, and
+Then open the app: the **Drone** panel's status turns green once it's connected, and
 **Take off / Hold / Return / Land** command PX4 while the 3D view and HUD follow its
-telemetry. The bridge listens on `ws://localhost:8765` (localhost only).
+telemetry. (The app needs PX4 and the bridge running; there's no offline demo.) The bridge listens on `ws://localhost:8765` (localhost only).
 
 Home position is set with `PX4_HOME_LAT` / `PX4_HOME_LON` / `PX4_HOME_ALT` (metres
 above sea level) in [docker-compose.yml](docker-compose.yml).
@@ -53,8 +53,8 @@ again at home, and the bridge re-uploads the geofence. For this, the **bridge ow
 Docker network** and PX4 joins it (`network_mode: service:bridge`), so PX4 restarting
 doesn't take the bridge's network down.
 
-Don't run `bridge_test.py` with the app open on the PX4 source: the app's collision
-check would react to the test drone.
+Don't run `bridge_test.py` with the app open: the app's collision check would react to
+the test drone (and could cut its motors).
 
 ### Geofence
 

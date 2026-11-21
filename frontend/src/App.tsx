@@ -68,7 +68,7 @@ function App() {
         onTilesStatus={setTilesStatus}
         onLayerStatus={onLayerStatus}
         onMapReady={setMapApi}
-        droneSource={drone.initialSource}
+        droneSource={drone.source}
         onDroneView={drone.setDroneView}
       />
       <aside className="sidebar">

@@ -121,7 +121,7 @@ export class DroneView {
     this.cleanups.push(viewer.scene.preRender.addEventListener(() => this.onFrame()))
   }
 
-  /** Switch where the drone's state comes from (demo flight ⇄ PX4). Clears the trail. */
+  /** Set where the drone's state comes from. Clears the trail. */
   setSource(source: DroneSource) {
     if (source === this.source) return
     this.unsubscribeSource?.()

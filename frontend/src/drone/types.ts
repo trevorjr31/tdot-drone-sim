@@ -30,7 +30,7 @@ export type DroneState = {
   home: { lat: number; lon: number; altAmslM: number }
 }
 
-/** Anything that produces drone states: the demo flight now, the PX4 bridge later. */
+/** Anything that produces drone states (the PX4 bridge; also handy for tests). */
 export interface DroneSource {
   /** Human-readable name shown in the UI. */
   readonly name: string

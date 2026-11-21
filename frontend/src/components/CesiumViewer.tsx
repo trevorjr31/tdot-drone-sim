@@ -36,7 +36,7 @@ type Props = {
   onLayerStatus?: (layer: LayerId, status: LayerStatus, message?: string) => void
   /** Called once the map can be searched and navigated (and with null when it goes away). */
   onMapReady?: (api: MapApi | null) => void
-  /** Where the drone's state comes from (demo flight now, PX4 bridge later). */
+  /** Where the drone's state comes from (PX4 via the bridge). */
   droneSource?: DroneSource
   /** Called with the drone view once created (and null when it goes away). */
   onDroneView?: (view: DroneView | null) => void

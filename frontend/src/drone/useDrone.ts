@@ -1,22 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { SourceId } from '../components/DronePanel'
-import { DemoFlightSource } from './demoFlight'
 import { centreOf, type MapApi, type Place } from '../places/types'
 import type { DroneView, FlyToTarget, HudInfo } from './droneView'
 import { KeyboardFlight } from './keyboardFlight'
 import { Px4BridgeSource, type BridgeStatus, type Px4Command, type Px4CommandParams } from './px4Bridge'
 import type { CrashSite } from './crash'
 import { useCollisions } from './useCollisions'
-
-const SOURCE_KEY = 'tdot.droneSource.v1'
-
-function loadSource(): SourceId {
-  try {
-    return localStorage.getItem(SOURCE_KEY) === 'px4' ? 'px4' : 'demo'
-  } catch {
-    return 'demo'
-  }
-}
 
 type Options = {
   /** Map click picker (from the map API), for "pick on map" fly-to. */
@@ -26,14 +14,11 @@ type Options = {
 }
 
 /**
- * All drone state for the UI: the two sources (demo flight, PX4 via the bridge),
- * which one feeds the 3D view, camera mode, HUD data, PX4 commands, keyboard
- * flying and fly-to.
+ * All drone state for the UI: the PX4 connection (via the bridge), HUD data,
+ * PX4 commands, keyboard flying, fly-to, collisions and crash/reset.
  */
 export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
-  const [demo] = useState(() => new DemoFlightSource())
   const [px4] = useState(() => new Px4BridgeSource())
-  const [sourceId, setSourceId] = useState<SourceId>(loadSource)
   const [droneView, setDroneView] = useState<DroneView | null>(null)
   const [hud, setHud] = useState<HudInfo | null>(null)
   const [trailVisible, setTrailVisible] = useState(true)
@@ -45,8 +30,6 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
   const [picking, setPicking] = useState(false)
   const [crashed, setCrashed] = useState(false)
 
-  const source = sourceId === 'demo' ? demo : px4
-
   useEffect(() => {
     if (!droneView) return
     const offHud = droneView.onHud(setHud)
@@ -57,60 +40,19 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     }
   }, [droneView])
 
-  // Feed the selected source to the 3D view; only keep the bridge connection open while PX4 is selected.
+  // Connect to the bridge (and keep reconnecting) for as long as the app is open.
   useEffect(() => {
-    droneView?.setSource(source)
-  }, [droneView, source])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(SOURCE_KEY, sourceId)
-    } catch {
-      // ignore
-    }
-    if (sourceId === 'px4') {
-      demo.pause()
-      px4.connect()
-    } else {
-      px4.disconnect()
-    }
-  }, [sourceId, demo, px4])
-
-  const selectSource = useCallback(
-    (id: SourceId) => {
-      setSourceId(id)
-      setPx4Error(null) // an error from the other source no longer applies
-      droneView?.clearCrash() // a crash belongs to the source that crashed
-      setCrashed(false)
-    },
-    [droneView],
-  )
-
+    px4.connect()
+    return () => px4.disconnect()
+  }, [px4])
   useEffect(() => px4.onStatus(setPx4Status), [px4])
   useEffect(() => px4.onNotice(setPx4Error), [px4])
-  useEffect(
-    () => () => {
-      demo.pause()
-      px4.disconnect()
-    },
-    [demo, px4],
-  )
   useEffect(() => droneView?.setTrailVisible(trailVisible), [droneView, trailVisible])
 
   // Dev only: poke at the drone from the browser console (window.tdot).
   useEffect(() => {
-    if (import.meta.env.DEV) (window as unknown as { tdot: unknown }).tdot = { demo, px4, droneView }
-  }, [demo, px4, droneView])
-
-  const startDemo = useCallback(() => {
-    if (demo.finished) droneView?.clearTrail()
-    demo.start()
-  }, [demo, droneView])
-
-  const resetDemo = useCallback(() => {
-    demo.reset()
-    droneView?.clearTrail()
-  }, [demo, droneView])
+    if (import.meta.env.DEV) (window as unknown as { tdot: unknown }).tdot = { px4, droneView }
+  }, [px4, droneView])
 
   /** Sends a PX4 command; resolves true if PX4 accepted it (errors show in the panel). */
   const px4Command = useCallback(
@@ -176,7 +118,7 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
       keyboardRef.current = null
     }
   }, [px4])
-  const canFly = sourceId === 'px4' && px4Status === 'connected' && !crashed && (hud?.state.inAir ?? false)
+  const canFly = px4Status === 'connected' && !crashed && (hud?.state.inAir ?? false)
   useEffect(() => keyboardRef.current?.setEnabled(canFly), [canFly])
 
   // Building collisions: PX4 doesn't know about buildings, so the app decides it crashed.
@@ -187,28 +129,22 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
       keyboardRef.current?.interrupt()
       droneView?.crash(site)
       setCrashed(true)
-      if (sourceId === 'px4') void px4Command('crash')
-      else demo.pause()
+      void px4Command('crash')
     },
-    [sourceId, droneView, px4Command, demo],
+    [droneView, px4Command],
   )
-  const collision = useCollisions(source, onBuildingHit, !crashed)
+  const collision = useCollisions(px4, onBuildingHit, !crashed)
 
-  /** Back to the start: PX4 restarts at home (or the demo resets), the wreck is cleared. */
+  /** Back to the start: PX4 restarts with the drone at home, and the wreck is cleared. */
   const resetAfterCrash = useCallback(async () => {
-    if (sourceId === 'px4') {
-      if (!(await px4Command('reset'))) return
-    } else {
-      demo.reset()
-    }
+    if (!(await px4Command('reset'))) return
     droneView?.clearCrash()
     setCrashed(false)
-  }, [sourceId, px4Command, demo, droneView])
-
+  }, [px4Command, droneView])
 
   return {
-    /** Source the 3D view starts with (CesiumViewer prop). */
-    initialSource: demo,
+    /** Drone state for the 3D view (CesiumViewer prop). */
+    source: px4,
     setDroneView,
     droneView,
     hud,
@@ -217,15 +153,6 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     panel: {
       crashed,
       onReset: () => void resetAfterCrash(),
-      source: sourceId,
-      onSource: selectSource,
-      demo: {
-        running: demo.running,
-        finished: demo.finished,
-        onStart: startDemo,
-        onPause: () => demo.pause(),
-        onReset: resetDemo,
-      },
       px4: {
         status: px4Status,
         version: px4.px4Version,
@@ -238,7 +165,7 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
         target,
         picking,
         searchedPlaceTitle: searchedPlace?.title ?? null,
-        geofence: sourceId === 'px4' ? px4.geofence : null,
+        geofence: px4.geofence,
         onPickAndFly: () => void pickAndFly(),
         onFlyToSearched: flyToSearched,
       },
