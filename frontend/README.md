@@ -67,9 +67,15 @@ can start before or after it; the **Drone** panel shows the connection status. O
 the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
 [`DroneState`](src/drone/types.ts).
 
-- **Take off** (with height), **Hold**, **Return** and **Land** command PX4; refusals
+- **Before a flight** the panel shows the status, the geofence and two choices:
+  - **Free fly**: takes off straight away (to 30 m) and goes to the controls.
+  - **Plan a route**: choose a destination (*Pick on map*, or your last search result),
+    then set the **height** and **Take off**. The drone climbs to that height and flies
+    to the destination by itself. *Back* returns to the choice.
+
+  After landing (or Reset after a crash) the panel returns to this choice. Refusals
   (e.g. pre-arm checks failing) show in the panel.
-- Once airborne:
+- **In flight**: **Hold**, **Return** and **Land**, plus:
   - **Keyboard flying**: **W/S** (or ↑/↓) forward/back, **A/D** slide, **←/→** (or Q/E)
     turn, **Space/Shift** up/down. The bridge puts PX4 in offboard mode and streams the
     velocity; letting go hovers, and after 3 s idle PX4 is handed back to Hold. Taking the
@@ -109,7 +115,7 @@ the browser console for debugging.
 Drag rotates around the drone, scroll zooms. Click a neighbourhood or
 building for details.
 
-The map is always the photorealistic 3D city. The **Layers** panel (top-left) toggles
+The map is always the photorealistic 3D city. **Settings** (the gear, top-right) has the **Layers** toggles for
 the two overlays, **N** neighbourhoods and **B** city boundary; your choices are
 remembered in this browser. The City 3D Massing data is never drawn: it runs in the
 background for building collisions, the HUD's building distance, and click info.

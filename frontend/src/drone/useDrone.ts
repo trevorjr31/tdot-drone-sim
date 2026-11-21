@@ -6,6 +6,14 @@ import { Px4BridgeSource, type BridgeStatus, type Px4Command, type Px4CommandPar
 import type { CrashSite } from './crash'
 import { useCollisions } from './useCollisions'
 
+/** Pre-flight choice: free flying with the keyboard, or a planned route to a destination. */
+export type Mission = 'choose' | 'free' | 'route'
+
+/** Free fly takes off straight away to this height (above the launch point). */
+const FREE_FLY_ALT_M = 30
+/** A planned route starts its fly-to once within this much of the takeoff height. */
+const ROUTE_CLIMB_TOLERANCE_M = 2
+
 type Options = {
   /** Map click picker (from the map API), for "pick on map" fly-to. */
   pickLocation?: MapApi['pickLocation']
@@ -29,10 +37,32 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
   const [target, setTarget] = useState<FlyToTarget | null>(null)
   const [picking, setPicking] = useState(false)
   const [crashed, setCrashed] = useState(false)
+  const [mission, setMission] = useState<Mission>('choose')
+  const [routeDest, setRouteDest] = useState<FlyToTarget | null>(null)
+  /** A planned route waiting for the takeoff to reach height before flying to its destination. */
+  const pendingRoute = useRef<{ dest: FlyToTarget; altM: number } | null>(null)
+  const startRouteLegRef = useRef<(dest: FlyToTarget) => void>(() => {})
 
   useEffect(() => {
     if (!droneView) return
-    const offHud = droneView.onHud(setHud)
+    let wasFlying = false
+    const offHud = droneView.onHud((h) => {
+      setHud(h)
+      const flying = !!h && (h.state.armed || h.state.inAir)
+      // Landed after a flight: back to the pre-flight choice.
+      if (wasFlying && h && !flying) {
+        setMission('choose')
+        setRouteDest(null)
+        pendingRoute.current = null
+      }
+      wasFlying = flying
+      // Planned route: once the takeoff has reached height, fly to the destination.
+      const route = pendingRoute.current
+      if (route && h?.state.inAir && h.state.relAltM >= route.altM - ROUTE_CLIMB_TOLERANCE_M) {
+        pendingRoute.current = null
+        startRouteLegRef.current(route.dest)
+      }
+    })
     const offTarget = droneView.onTargetChange(setTarget)
     return () => {
       offHud()
@@ -81,6 +111,48 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
       void px4Command('goto', { lat, lon })
     },
     [droneView, px4Command],
+  )
+
+  useEffect(() => {
+    startRouteLegRef.current = (dest) => flyTo(dest.lat, dest.lon, dest.label)
+  }, [flyTo])
+
+  // --- pre-flight -----------------------------------------------------------
+
+  /** Free fly: take off straight away and hand over the controls. */
+  const freeFly = useCallback(async () => {
+    setMission('free')
+    if (!(await px4Command('takeoff', { altitudeM: FREE_FLY_ALT_M }))) setMission('choose')
+  }, [px4Command])
+
+  const backToChoose = useCallback(() => {
+    setMission('choose')
+    setRouteDest(null)
+  }, [])
+
+  const pickRouteDest = useCallback(async () => {
+    if (!pickLocation) return
+    setPicking(true)
+    const point = await pickLocation()
+    setPicking(false)
+    if (point) setRouteDest({ lat: point.lat, lon: point.lon, label: 'Map point' })
+  }, [pickLocation])
+
+  const routeToSearched = useCallback(() => {
+    if (!searchedPlace) return
+    const { lat, lon } = centreOf(searchedPlace.target)
+    setRouteDest({ lat, lon, label: searchedPlace.title })
+  }, [searchedPlace])
+
+  /** Planned route: take off to the chosen height, then fly to the destination. */
+  const startRoute = useCallback(
+    async (altM: number) => {
+      if (!routeDest) return
+      pendingRoute.current = { dest: routeDest, altM }
+      if (await px4Command('takeoff', { altitudeM: altM })) droneView?.setTarget(routeDest)
+      else pendingRoute.current = null
+    },
+    [routeDest, px4Command, droneView],
   )
 
   const pickAndFly = useCallback(async () => {
@@ -140,6 +212,8 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     if (!(await px4Command('reset'))) return
     droneView?.clearCrash()
     setCrashed(false)
+    setMission('choose')
+    setRouteDest(null)
   }, [px4Command, droneView])
 
   return {
@@ -166,13 +240,21 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
         picking,
         searchedPlaceTitle: searchedPlace?.title ?? null,
         geofence: px4.geofence,
+        mission,
+        onFreeFly: () => void freeFly(),
+        onPlanRoute: () => setMission('route'),
+        onBack: backToChoose,
+        routeDest,
+        onPickRouteDest: () => void pickRouteDest(),
+        onRouteToSearched: routeToSearched,
+        onStartRoute: (altM: number) => void startRoute(altM),
         onPickAndFly: () => void pickAndFly(),
         onFlyToSearched: flyToSearched,
       },
       inAir: hud?.state.inAir ?? false,
       armed: hud?.state.armed ?? false,
-      trailVisible,
-      onTrailVisible: setTrailVisible,
     },
+    trailVisible,
+    setTrailVisible,
   }
 }

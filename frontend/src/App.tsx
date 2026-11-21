@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CesiumViewer, type TilesStatus } from './components/CesiumViewer'
 import { DroneHud } from './components/DroneHud'
 import { DronePanel } from './components/DronePanel'
-import { LayerPanel } from './components/LayerPanel'
+import { LayerList } from './components/LayerList'
+import { SettingsMenu, SettingsSection } from './components/SettingsMenu'
 import { useDrone } from './drone/useDrone'
 import { SearchBox } from './components/SearchBox'
 import type { MapApi, Place } from './places/types'
@@ -73,9 +74,31 @@ function App() {
       />
       <aside className="sidebar">
         <SearchBox api={searchApi} />
-        <LayerPanel visibility={visibility} status={layerStatus} onToggle={toggle} />
         <DronePanel {...drone.panel} />
       </aside>
+      <SettingsMenu>
+        <SettingsSection title="Layers">
+          <LayerList visibility={visibility} status={layerStatus} onToggle={toggle} />
+        </SettingsSection>
+        <SettingsSection title="Drone">
+          <ul className="layer-panel__list">
+            <li>
+              <label className="layer-row" title="The yellow line showing where the drone has flown">
+                <input type="checkbox" checked={drone.trailVisible} onChange={(e) => drone.setTrailVisible(e.target.checked)} />
+                <span className="layer-row__swatch" style={{ background: '#ffd166' }} aria-hidden />
+                <span className="layer-row__label">Flight trail</span>
+              </label>
+            </li>
+          </ul>
+        </SettingsSection>
+        <p className="layer-panel__footer">
+          City data:{' '}
+          <a href="https://open.toronto.ca/" target="_blank" rel="noopener noreferrer">
+            City of Toronto Open Data
+          </a>{' '}
+          (OGL – Toronto)
+        </p>
+      </SettingsMenu>
       <DroneHud info={drone.hud} collision={drone.collision} />
       {tilesStatus?.state === 'loading' && <div className="banner banner-info">Loading 3D Toronto…</div>}
       {tilesStatus?.state === 'error' && (
