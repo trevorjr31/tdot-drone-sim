@@ -71,6 +71,15 @@ The **Drone** panel (left) has two sources, both producing the same
   connection retries automatically, so the bridge can start before or after the app.
   Override the address with `VITE_BRIDGE_URL`.
 
+  Once airborne:
+  - **Keyboard flying**: **W/S** (or ↑/↓) forward/back, **A/D** slide, **←/→** (or Q/E)
+    turn, **Space/Shift** up/down. The bridge puts PX4 in offboard mode and streams the
+    velocity; letting go hovers, and after 3 s idle PX4 is handed back to Hold. Taking the
+    keys cancels a fly-to.
+  - **Fly to**: *Pick on map* (click a point; Esc cancels) or the last search result.
+    PX4 flies there at its current height; a cyan ring and dashed line mark the target
+    until it arrives. *Stop* holds position.
+
 The chosen source is remembered in this browser.
 
 - **Cameras** (**C** cycles): *Chase* follows behind, *FPV* is the drone's-eye view,

@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import type { BridgeStatus, Px4Command } from '../drone/px4Bridge'
+import type { FlyToTarget } from '../drone/droneView'
+import type { BridgeStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
 import { CAMERA_MODES, type CameraMode } from '../drone/types'
 
 export type SourceId = 'demo' | 'px4'
@@ -25,7 +26,17 @@ type Props = {
     /** Command currently waiting for PX4's answer. */
     busy: Px4Command | null
     error: string | null
-    onCommand: (action: Px4Command, params?: { altitudeM?: number }) => void
+    onCommand: (action: Px4Command, params?: Px4CommandParams) => void
+    /** Connected and airborne: keyboard flying and fly-to are available. */
+    canFly: boolean
+    /** A flight key is held right now. */
+    keysActive: boolean
+    target: FlyToTarget | null
+    /** Waiting for a click on the map. */
+    picking: boolean
+    searchedPlaceTitle: string | null
+    onPickAndFly: () => void
+    onFlyToSearched: () => void
   }
 
   inAir: boolean
@@ -180,6 +191,66 @@ function Px4Controls(p: Props['px4'] & { inAir: boolean; armed: boolean; takeoff
           Land
         </button>
       </div>
+      {p.canFly && (
+        <>
+          <div className="drone-panel__label">Fly to</div>
+          {p.target ? (
+            <div className="drone-panel__flying">
+              <span>
+                Flying to <strong>{p.target.label}</strong>…
+              </span>
+              <button type="button" className="btn btn--small" onClick={() => p.onCommand('hold')}>
+                Stop
+              </button>
+            </div>
+          ) : (
+            <div className="drone-panel__buttons">
+              <button type="button" className="btn" onClick={p.onPickAndFly} disabled={p.picking || p.busy !== null}>
+                {p.picking ? 'Click the map… (Esc)' : 'Pick on map'}
+              </button>
+              {p.searchedPlaceTitle && (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={p.onFlyToSearched}
+                  disabled={p.picking || p.busy !== null}
+                  title={`Fly to ${p.searchedPlaceTitle}`}
+                >
+                  <span className="btn__ellipsis">{p.searchedPlaceTitle}</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className={`drone-panel__keys${p.keysActive ? ' is-active' : ''}`} aria-label="Keyboard flying">
+            <div className="drone-panel__label">Keyboard {p.keysActive ? '· flying' : ''}</div>
+            <dl>
+              <dt>
+                <kbd>W</kbd>
+                <kbd>S</kbd>
+              </dt>
+              <dd>forward / back</dd>
+              <dt>
+                <kbd>A</kbd>
+                <kbd>D</kbd>
+              </dt>
+              <dd>slide left / right</dd>
+              <dt>
+                <kbd>←</kbd>
+                <kbd>→</kbd>
+              </dt>
+              <dd>turn</dd>
+              <dt>
+                <kbd>Space</kbd>
+                <kbd>Shift</kbd>
+              </dt>
+              <dd>up / down</dd>
+            </dl>
+            <div className="drone-panel__hint">Let go to hover. Idle for 3 s hands back to Hold.</div>
+          </div>
+        </>
+      )}
+
       {p.error && (
         <div className="drone-panel__error" role="alert">
           {p.error}

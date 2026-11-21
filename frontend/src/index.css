@@ -638,3 +638,69 @@ body,
   color: #ffb3b9;
   font-size: 12px;
 }
+
+.btn--small {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+}
+
+.btn__ellipsis {
+  display: block;
+  overflow: hidden;
+  max-width: 130px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drone-panel__flying {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(76, 201, 240, 0.4);
+  border-radius: 6px;
+  background: rgba(76, 201, 240, 0.12);
+  color: #bdeefc;
+  font-size: 12px;
+}
+
+.drone-panel__keys {
+  padding: 6px 8px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.drone-panel__keys.is-active {
+  border-color: rgba(255, 209, 102, 0.55);
+}
+
+.drone-panel__keys dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  margin: 4px 0 6px;
+  font-size: 12px;
+}
+
+.drone-panel__keys dt {
+  display: flex;
+  gap: 3px;
+}
+
+.drone-panel__keys dd {
+  margin: 0;
+  color: var(--panel-muted);
+  align-self: center;
+}
+
+.drone-panel__keys kbd {
+  min-width: 18px;
+  padding: 0 4px;
+  border: 1px solid #5c636b;
+  border-radius: 3px;
+  color: var(--panel-text);
+  font: 11px/16px ui-monospace, Consolas, monospace;
+  text-align: center;
+}

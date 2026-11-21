@@ -5,7 +5,7 @@ import { DronePanel } from './components/DronePanel'
 import { LayerPanel } from './components/LayerPanel'
 import { useDrone } from './drone/useDrone'
 import { SearchBox } from './components/SearchBox'
-import type { MapApi } from './places/types'
+import type { MapApi, Place } from './places/types'
 import { LAYERS, loadVisibility, saveVisibility, type LayerId, type LayerStatus, type LayerVisibility } from './layers/layerState'
 
 type LayerStatuses = Partial<Record<LayerId, { status: LayerStatus; message?: string }>>
@@ -16,7 +16,9 @@ function App() {
   const [layerStatus, setLayerStatus] = useState<LayerStatuses>({})
   const [mapApi, setMapApi] = useState<MapApi | null>(null)
 
-  const drone = useDrone()
+  // The last place chosen in search, offered to the drone as a fly-to destination.
+  const [searchedPlace, setSearchedPlace] = useState<Place | null>(null)
+  const drone = useDrone({ pickLocation: mapApi?.pickLocation, searchedPlace })
   const { droneView } = drone
 
   // Jumping to a searched place needs the map camera, not the drone's.
@@ -27,10 +29,15 @@ function App() {
         flyToPlace: (place) => {
           droneView?.setCameraMode('free')
           mapApi.flyToPlace(place)
+          setSearchedPlace(place)
         },
         flyHome: () => {
           droneView?.setCameraMode('free')
           mapApi.flyHome()
+        },
+        clearPin: () => {
+          mapApi.clearPin()
+          setSearchedPlace(null)
         },
       },
     [mapApi, droneView],

@@ -1,3 +1,4 @@
+import type { VelocityCommand } from './keyboardFlight'
 import type { DroneSource, DroneState } from './types'
 
 /**
@@ -15,12 +16,22 @@ export type BridgeStatus =
   | 'px4-offline'
   | 'connected'
 
-export type Px4Command = 'takeoff' | 'land' | 'rtl' | 'hold' | 'arm' | 'disarm'
+export type Px4Command = 'takeoff' | 'land' | 'rtl' | 'hold' | 'arm' | 'disarm' | 'goto'
+
+export type Px4CommandParams = {
+  /** takeoff: height above launch. */
+  altitudeM?: number
+  /** goto: destination; height defaults to the current one. */
+  lat?: number
+  lon?: number
+  relAltM?: number
+}
 
 type ServerMessage =
   | { type: 'status'; px4Connected: boolean; px4Version: string | null }
   | { type: 'state'; state: DroneState }
   | { type: 'ack'; id: string; ok: boolean; error: string | null }
+  | { type: 'notice'; level: string; message: string }
 
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 5000]
 const COMMAND_TIMEOUT_MS = 30_000
@@ -40,6 +51,7 @@ export function parseServerMessage(raw: string): ServerMessage | null {
   if (m.type === 'status' && typeof m.px4Connected === 'boolean') return m as ServerMessage
   if (m.type === 'ack' && typeof m.id === 'string' && typeof m.ok === 'boolean') return m as ServerMessage
   if (m.type === 'state' && isDroneState(m.state)) return m as ServerMessage
+  if (m.type === 'notice' && typeof m.message === 'string') return m as ServerMessage
   return null
 }
 
@@ -66,6 +78,7 @@ export class Px4BridgeSource implements DroneSource {
   private _px4Version: string | null = null
   private readonly listeners = new Set<(s: DroneState) => void>()
   private readonly statusListeners = new Set<(s: BridgeStatus) => void>()
+  private readonly noticeListeners = new Set<(message: string) => void>()
   private readonly pending = new Map<string, { resolve: () => void; reject: (e: Error) => void; timer: number }>()
   private wanted = false
   private attempt = 0
@@ -97,6 +110,17 @@ export class Px4BridgeSource implements DroneSource {
     return () => void this.statusListeners.delete(listener)
   }
 
+  /** Problems the bridge reports outside a command reply (e.g. keyboard flying refused). */
+  onNotice(listener: (message: string) => void) {
+    this.noticeListeners.add(listener)
+    return () => void this.noticeListeners.delete(listener)
+  }
+
+  /** Keyboard flying: body-frame velocity, fire-and-forget (the bridge streams it to PX4). */
+  sendVelocity(v: VelocityCommand) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'velocity', ...v }))
+  }
+
   /** Start connecting (and keep reconnecting) until disconnect(). */
   connect() {
     if (this.wanted) return
@@ -116,7 +140,7 @@ export class Px4BridgeSource implements DroneSource {
   }
 
   /** Sends a command to PX4; resolves when PX4 accepts it, rejects with PX4's reason otherwise. */
-  command(action: Px4Command, params: { altitudeM?: number } = {}): Promise<void> {
+  command(action: Px4Command, params: Px4CommandParams = {}): Promise<void> {
     const ws = this.ws
     if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Not connected to the bridge'))
     const id = crypto.randomUUID()
@@ -172,6 +196,8 @@ export class Px4BridgeSource implements DroneSource {
       this._latest = msg.state
       if (this._status !== 'connected') this.setStatus('connected')
       for (const listener of this.listeners) listener(msg.state)
+    } else if (msg.type === 'notice') {
+      for (const listener of this.noticeListeners) listener(msg.message)
     } else if (msg.type === 'ack') {
       const p = this.pending.get(msg.id)
       if (!p) return

@@ -47,7 +47,8 @@ above sea level) in [docker-compose.yml](docker-compose.yml).
 
 Both check home is in Toronto, take off to 20 m and land. `flight_test.py` talks to PX4
 directly over MAVLink; `bridge_test.py` goes through the bridge's WebSocket exactly as the
-browser does (and checks the 20 Hz state rate):
+browser does: it checks the 20 Hz state rate, flies forward with keyboard-style velocity
+messages, checks the hover and hand-back to Hold, then flies to a point 60 m north:
 
 ```bash
 docker run --rm --network container:tdot-px4 -v "$PWD/sim/tools:/tools:ro" \
@@ -76,8 +77,15 @@ WebSocket protocol (see [sim/bridge/bridge.py](sim/bridge/bridge.py)):
 |---|---|
 | bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2"}` on connect and on change |
 | bridge → app | `{"type":"state","state":{…}}` at 20 Hz, same fields as the app's `DroneState` |
-| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`) |
+| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`) |
 | bridge → app | `{"type":"ack","id":"…","ok":false,"error":"…"}` with PX4's reason if refused |
+| app → bridge | `{"type":"velocity","forwardMs":5,"rightMs":0,"downMs":0,"yawRateDegS":0}` ~10 Hz while keys are held (keyboard flying; body frame, down positive) |
+| bridge → app | `{"type":"notice","level":"error","message":"…"}` e.g. "Take off first" |
+
+Keyboard flying uses PX4's offboard mode: the bridge streams the latest velocity at
+20 Hz, hovers if input goes stale (0.5 s) and hands back to PX4 Hold after 3 s without
+input (e.g. the tab was closed). Only non-zero input takes control, so the zeros sent
+on key release can't override a command sent meanwhile.
 
 ## CI
 

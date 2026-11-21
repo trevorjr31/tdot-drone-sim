@@ -1,6 +1,7 @@
 import {
   CallbackPositionProperty,
   CallbackProperty,
+  Cartesian2,
   Cartesian3,
   Cartographic,
   Color,
@@ -8,11 +9,14 @@ import {
   Ellipsoid,
   HeadingPitchRange,
   HeadingPitchRoll,
+  HeightReference,
+  LabelStyle,
   Math as CesiumMath,
   Matrix4,
   PolylineDashMaterialProperty,
   Quaternion,
   Transforms,
+  VerticalOrigin,
   type Entity,
   type Viewer,
 } from 'cesium'
@@ -33,6 +37,11 @@ const POSE_REUSE_MS = 5
 
 /** Local frame with x = north (forward at heading 0), y = west, z = up. */
 const NORTH_WEST_UP = Transforms.localFrameToFixedFrameGenerator('north', 'west')
+
+export type FlyToTarget = { lat: number; lon: number; label: string }
+
+/** Within this distance (and nearly stopped) the target counts as reached. */
+const TARGET_REACHED_M = 5
 
 export type HudInfo = {
   state: DroneState
@@ -75,6 +84,11 @@ export class DroneView {
   private aglM: number | null = null
   private readonly modeListeners = new Set<(m: CameraMode) => void>()
   private readonly hudListeners = new Set<(h: HudInfo | null) => void>()
+  private readonly targetListeners = new Set<(t: FlyToTarget | null) => void>()
+  private target: FlyToTarget | null = null
+  private readonly targetPosition = new Cartesian3()
+  /** targetPosition is valid for the current frame (computed with the pose). */
+  private hasTargetPosition = false
   private readonly cleanups: (() => void)[] = []
   private unsubscribeSource: (() => void) | undefined
   private source: DroneSource | undefined
@@ -128,6 +142,19 @@ export class DroneView {
     return () => void this.hudListeners.delete(listener)
   }
 
+  /** Show where the drone is flying to; cleared automatically on arrival. */
+  setTarget(target: FlyToTarget | null) {
+    this.target = target
+    this.hasTargetPosition = false
+    this.poseAt = -Infinity // recompute (including the target position) before the next draw
+    for (const listener of this.targetListeners) listener(target)
+  }
+
+  onTargetChange(listener: (t: FlyToTarget | null) => void) {
+    this.targetListeners.add(listener)
+    return () => void this.targetListeners.delete(listener)
+  }
+
   setTrailVisible(show: boolean) {
     const trail = this.others.find((e) => e.id === 'drone-trail')
     if (trail) trail.show = show
@@ -149,6 +176,7 @@ export class DroneView {
     }
     this.modeListeners.clear()
     this.hudListeners.clear()
+    this.targetListeners.clear()
   }
 
   // --- per frame -------------------------------------------------------------
@@ -183,6 +211,13 @@ export class DroneView {
       Matrix4.multiplyByPoint(frame, Cartesian3.multiplyByScalar(part.offset, VISUAL_SCALE, new Cartesian3()), part.position)
       Quaternion.multiply(bodyOrientation, part.rotation, part.orientation)
     }
+
+    // Fly-to target, drawn at the drone's height so the line shows the path it will fly.
+    // Computed here (not in onFrame) because Cesium reads the line's positions before preRender.
+    this.hasTargetPosition = this.target !== null
+    if (this.target) {
+      Cartesian3.fromDegrees(this.target.lon, this.target.lat, state.altAmslM + TORONTO_GEOID_OFFSET_M, Ellipsoid.WGS84, this.targetPosition)
+    }
   }
 
   private onFrame() {
@@ -213,6 +248,11 @@ export class DroneView {
     if (state.timeMs < this.lastTrailAt) this.clearTrail() // source restarted
 
     this.updateCamera(state, dt)
+
+    if (this.target) {
+      const remaining = distanceM(state.lon, state.lat, this.target.lon, this.target.lat)
+      if (remaining < TARGET_REACHED_M && state.groundSpeedMs < 1) this.setTarget(null)
+    }
 
     if (now - this.lastHudAt >= HUD_INTERVAL_MS) {
       this.lastHudAt = now
@@ -356,6 +396,49 @@ export class DroneView {
           ),
           width: 1.5,
           material: new PolylineDashMaterialProperty({ color: Color.WHITE.withAlpha(0.8), dashLength: 12 }),
+        },
+      }),
+    )
+    // Fly-to destination: a ring on the ground plus a dashed line from the drone.
+    this.others.push(
+      entities.add({
+        id: 'drone-target',
+        position: new CallbackPositionProperty(
+          () => (this.target ? Cartesian3.fromDegrees(this.target.lon, this.target.lat) : undefined),
+          false,
+        ),
+        point: {
+          pixelSize: 16,
+          color: Color.fromCssColorString('#4cc9f0').withAlpha(0.25),
+          outlineColor: Color.fromCssColorString('#4cc9f0'),
+          outlineWidth: 3,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: new CallbackProperty(() => (this.target ? `Fly to: ${this.target.label}` : ''), false),
+          font: '600 13px system-ui, sans-serif',
+          fillColor: Color.WHITE,
+          outlineColor: Color.fromCssColorString('#1d1d1f'),
+          outlineWidth: 3,
+          style: LabelStyle.FILL_AND_OUTLINE,
+          verticalOrigin: VerticalOrigin.BOTTOM,
+          pixelOffset: new Cartesian2(0, -14),
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      }),
+    )
+    this.others.push(
+      entities.add({
+        id: 'drone-target-line',
+        polyline: {
+          positions: new CallbackProperty(
+            () => (this.poseFor() && this.target && this.hasTargetPosition ? [this.dronePosition, this.targetPosition] : []),
+            false,
+          ),
+          width: 2,
+          material: new PolylineDashMaterialProperty({ color: Color.fromCssColorString('#4cc9f0'), dashLength: 16 }),
         },
       }),
     )

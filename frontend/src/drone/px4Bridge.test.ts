@@ -24,6 +24,7 @@ describe('parseServerMessage', () => {
     expect(parseServerMessage(JSON.stringify({ type: 'state', state }))).toEqual({ type: 'state', state })
     expect(parseServerMessage('{"type":"status","px4Connected":true,"px4Version":"1.16.2"}')?.type).toBe('status')
     expect(parseServerMessage('{"type":"ack","id":"abc","ok":false,"error":"Arming denied"}')?.type).toBe('ack')
+    expect(parseServerMessage('{"type":"notice","level":"error","message":"Take off first"}')?.type).toBe('notice')
   })
 
   it('rejects malformed or unknown messages instead of crashing the view', () => {

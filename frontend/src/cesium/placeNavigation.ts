@@ -14,6 +14,7 @@ import {
   Math as CesiumMath,
   Rectangle,
   sampleTerrainMostDetailed,
+  ScreenSpaceEventType,
   VerticalOrigin,
   type CustomDataSource,
   type Viewer,
@@ -158,6 +159,44 @@ export class PlaceNavigator implements MapApi {
       this.viewer.selectedEntity = undefined
       this.showPin(lon, lat, place.title)
     }
+  }
+
+  private cancelPick: (() => void) | undefined
+
+  pickLocation = (): Promise<{ lon: number; lat: number } | null> => {
+    this.cancelPick?.() // only one pick at a time
+    return new Promise((resolve) => {
+      const { viewer } = this
+      const handler = viewer.screenSpaceEventHandler
+      type ClickAction = (click: { position: Cartesian2 }) => void
+      const previous = handler.getInputAction(ScreenSpaceEventType.LEFT_CLICK) as ClickAction | undefined
+      const canvas = viewer.scene.canvas
+      canvas.style.cursor = 'crosshair'
+
+      const finish = (result: { lon: number; lat: number } | null) => {
+        this.cancelPick = undefined
+        window.removeEventListener('keydown', onKey)
+        if (!viewer.isDestroyed()) {
+          canvas.style.cursor = ''
+          if (previous) handler.setInputAction(previous, ScreenSpaceEventType.LEFT_CLICK)
+          else handler.removeInputAction(ScreenSpaceEventType.LEFT_CLICK)
+        }
+        resolve(result)
+      }
+      const onKey = (e: KeyboardEvent) => e.key === 'Escape' && finish(null)
+      window.addEventListener('keydown', onKey)
+      this.cancelPick = () => finish(null)
+
+      handler.setInputAction((click: { position: Cartesian2 }) => {
+        // The 3D surface under the cursor (Google mesh, terrain, buildings), else the ellipsoid.
+        const hit =
+          (viewer.scene.pickPositionSupported ? viewer.scene.pickPosition(click.position) : undefined) ??
+          viewer.camera.pickEllipsoid(click.position)
+        if (!hit) return // clicked the sky: keep waiting
+        const c = Cartographic.fromCartesian(hit)
+        finish({ lon: CesiumMath.toDegrees(c.longitude), lat: CesiumMath.toDegrees(c.latitude) })
+      }, ScreenSpaceEventType.LEFT_CLICK)
+    })
   }
 
   clearPin = () => {

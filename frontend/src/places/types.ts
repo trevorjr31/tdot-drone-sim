@@ -28,6 +28,8 @@ export type MapApi = {
   flyHome: () => void
   /** Removes the search-result pin. */
   clearPin: () => void
+  /** Waits for a click on the map and returns that point (null if cancelled with Esc). */
+  pickLocation: () => Promise<{ lon: number; lat: number } | null>
   /** Google geocoding through Cesium ion, limited to Toronto. */
   searchGoogle: (query: string) => Promise<{ places: Place[]; attributionHtml: string[] }>
   /** Local neighbourhood list (empty until the data has loaded). */

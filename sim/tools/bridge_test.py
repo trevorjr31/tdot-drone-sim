@@ -1,6 +1,7 @@
 """
 End-to-end test of PX4 + bridge, over the same WebSocket protocol the browser uses:
-wait for live state over Toronto, command a takeoff, check it climbs, command a landing.
+wait for live state over Toronto, take off, fly forward with keyboard-style velocity
+messages, let go (hover, then PX4 Hold), fly to a point, land.
 
     docker run --rm --network container:tdot-px4 -v "$PWD/sim/tools:/tools:ro" \
       python:3.12-slim sh -c "pip install -q -r /tools/requirements.txt && python /tools/bridge_test.py"
@@ -8,6 +9,7 @@ wait for live state over Toronto, command a takeoff, check it climbs, command a 
 
 import asyncio
 import json
+import math
 import os
 import sys
 import uuid
@@ -16,6 +18,16 @@ from websockets.asyncio.client import connect
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "ws://127.0.0.1:8765")
 TAKEOFF_ALT_M = 20.0
+# PX4 treats a fly-to target as reached within a few metres (its acceptance radius).
+ARRIVAL_RADIUS_M = 5.0
+
+
+def distance_m(lat1, lon1, lat2, lon2):
+    x = (lon2 - lon1) * 111_320 * math.cos(math.radians((lat1 + lat2) / 2))
+    y = (lat2 - lat1) * 110_574
+    return math.hypot(x, y)
+
+
 TORONTO_BOX = {"lat": (43.58, 43.86), "lon": (-79.64, -79.11)}
 
 
@@ -38,6 +50,8 @@ class Client:
                 print(f"Status: PX4 {'connected' if msg['px4Connected'] else 'not connected'} ({msg.get('px4Version')})")
             elif msg["type"] == "ack":
                 self.acks[msg["id"]] = msg
+            elif msg["type"] == "notice":
+                print(f"Notice: {msg['message']}")
 
     async def command(self, action: str, **params):
         cid = str(uuid.uuid4())
@@ -84,6 +98,33 @@ async def main():
         await c.command("takeoff", altitudeM=TAKEOFF_ALT_M)
         await c.until(lambda: c.state["relAltM"] > TAKEOFF_ALT_M - 2, 60, "takeoff altitude")
         print(f"Airborne: {c.state['relAltM']:.1f} m, mode {c.state['flightMode']}, armed {c.state['armed']}")
+
+        # Keyboard flying: hold "forward" (W) for 4 s, sending like the browser does (10 Hz).
+        start = (c.state["lat"], c.state["lon"])
+        for _ in range(40):
+            await ws.send(json.dumps({"type": "velocity", "forwardMs": 5, "rightMs": 0, "downMs": 0, "yawRateDegS": 0}))
+            await asyncio.sleep(0.1)
+        moved = distance_m(*start, c.state["lat"], c.state["lon"])
+        print(f"Keyboard forward: moved {moved:.1f} m, mode {c.state['flightMode']}, speed {c.state['groundSpeedMs']:.1f} m/s")
+        if c.state["flightMode"] != "Offboard" or moved < 8:
+            sys.exit("FAIL: velocity control didn't move the drone in offboard mode")
+
+        # Let go: it should brake to a hover, then hand back to PX4's Hold mode.
+        await c.until(lambda: c.state["groundSpeedMs"] < 1.0, 10, "hover after releasing keys")
+        print(f"Released: hovering ({c.state['groundSpeedMs']:.1f} m/s)")
+        await c.until(lambda: c.state["flightMode"] == "Hold", 10, "Hold mode after idle")
+        print("Idle: back in Hold")
+
+        # Fly to a point 60 m north at the current height.
+        target = (c.state["lat"] + 60 / 110_574, c.state["lon"])
+        await c.command("goto", lat=target[0], lon=target[1])
+        # Regression: the app sends a few zero velocities when keys are released. Arriving
+        # right after a fly-to, they must not take control back and cancel it.
+        for _ in range(5):
+            await ws.send(json.dumps({"type": "velocity", "forwardMs": 0, "rightMs": 0, "downMs": 0, "yawRateDegS": 0}))
+            await asyncio.sleep(0.1)
+        await c.until(lambda: distance_m(*target, c.state["lat"], c.state["lon"]) < ARRIVAL_RADIUS_M, 60, "arrival at fly-to target")
+        print(f"Fly-to: arrived within {distance_m(*target, c.state['lat'], c.state['lon']):.1f} m at {c.state['relAltM']:.0f} m")
 
         await c.command("land")
         await c.until(lambda: not c.state["inAir"], 90, "landing")
