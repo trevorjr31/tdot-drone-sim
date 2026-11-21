@@ -27,7 +27,10 @@ Requires Node 20.19+ (see [frontend/.nvmrc](frontend/.nvmrc)).
 
 Needs Docker Desktop. The image is built from Ubuntu 22.04 with PX4 v1.16.2, so it
 runs natively on Apple Silicon and x86. PX4 runs headless with its built-in physics
-(SIH); the 3D view will be the React app.
+(SIH); the 3D view is the React app. The build has two stages: PX4 is compiled in a
+throwaway stage, and the image you run holds only the compiled simulator (~180 MB).
+PX4's onboard flight logging is off by default (it writes gigabytes per session); set
+`PX4_LOGGING=1` on the `px4` service to turn it on (logs land in `/px4/log`).
 
 ```bash
 docker compose build         # first time only (PX4: clone + deps + compile; compile ~1 min on an M2)
