@@ -16,11 +16,21 @@ const STREET_WORDS =
 export function placeType(place: Place): PlaceType {
   if (place.kind === 'neighbourhood' || place.neighbourhoodId) return 'Neighbourhood'
   const title = place.title.trim()
-  if (/&| and /i.test(title) && STREET_WORDS.test(title.split(/&| and /i)[0].trim())) return 'Intersection'
+  if (isIntersection(title)) return 'Intersection'
   if (/^\d+[a-z]?\s/i.test(title)) return 'Address'
   if (STREET_WORDS.test(title)) return 'Street'
   if (diagonalM(place) > AREA_MIN_DIAGONAL_M) return 'Area'
   return 'Place'
+}
+
+/**
+ * "Yonge & Eglinton", "Bay St. & King St W" → intersection. "X and Y" only counts
+ * when one side looks like a street, so names like "Arts and Letters Club" don't.
+ */
+function isIntersection(title: string): boolean {
+  if (title.includes('&')) return true
+  const parts = title.split(/ and /i)
+  return parts.length === 2 && parts.some((p) => STREET_WORDS.test(p.trim()))
 }
 
 function diagonalM(place: Place): number {

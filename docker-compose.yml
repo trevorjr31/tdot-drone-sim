@@ -1,0 +1,24 @@
+# Drone simulation services. The React app still runs on the host (`npm run dev` in frontend/).
+#
+#   docker compose up -d px4      # start PX4 SITL
+#   docker compose logs -f px4    # watch its console
+#   docker compose down           # stop everything
+
+services:
+  px4:
+    build:
+      context: ./sim/px4
+      args:
+        PX4_VERSION: v1.16.2
+    image: tdot/px4-sitl:v1.16.2
+    container_name: tdot-px4
+    environment:
+      PX4_SIM_MODEL: sihsim_quadx
+      # Home: Nathan Phillips Square (City Hall), Toronto. Altitude is metres above sea level.
+      PX4_HOME_LAT: "43.65255"
+      PX4_HOME_LON: "-79.38330"
+      PX4_HOME_ALT: "92"
+    # PX4's interactive console needs a TTY to stay up when detached.
+    stdin_open: true
+    tty: true
+    restart: unless-stopped

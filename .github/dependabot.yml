@@ -1,0 +1,29 @@
+# Weekly dependency update PRs. Minor/patch updates are grouped to keep the noise down;
+# major versions come as separate PRs so breaking changes are reviewed one at a time.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /sim/tools
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /sim/px4
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

@@ -20,6 +20,7 @@ import {
 } from 'cesium'
 import { TORONTO_HOME } from '../config'
 import type { BoundaryProps, FeatureCollection, NeighbourhoodProps, Position } from '../data/torontoData'
+import { bboxOf, defaultRange, distanceM, pointInRing } from '../places/geo'
 import { normalize, titleFor } from '../places/search'
 import { centreOf, type MapApi, type Place, type PlaceTarget } from '../places/types'
 
@@ -229,42 +230,4 @@ function toTarget(destination: Rectangle | Cartesian3): PlaceTarget {
   }
   const c = Cartographic.fromCartesian(destination)
   return { type: 'point', lon: CesiumMath.toDegrees(c.longitude), lat: CesiumMath.toDegrees(c.latitude) }
-}
-
-/** Camera distance that fits the place: close for a building, further for a neighbourhood. */
-function defaultRange(target: PlaceTarget): number {
-  if (target.type === 'point') return 600
-  const width = distanceM(target.west, target.south, target.east, target.south)
-  const height = distanceM(target.west, target.south, target.west, target.north)
-  return Math.min(Math.max(Math.hypot(width, height) * 1.4, 450), 8000)
-}
-
-function bboxOf(polygons: Position[][][]) {
-  let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity
-  for (const rings of polygons) {
-    for (const [lon, lat] of rings[0]) {
-      west = Math.min(west, lon)
-      south = Math.min(south, lat)
-      east = Math.max(east, lon)
-      north = Math.max(north, lat)
-    }
-  }
-  return { west, south, east, north }
-}
-
-function distanceM(lon1: number, lat1: number, lon2: number, lat2: number): number {
-  const x = (lon2 - lon1) * 111_320 * Math.cos(CesiumMath.toRadians((lat1 + lat2) / 2))
-  const y = (lat2 - lat1) * 110_574
-  return Math.hypot(x, y)
-}
-
-/** Ray-casting point-in-polygon test on a [lon, lat] ring. */
-function pointInRing(lon: number, lat: number, ring: Ring): boolean {
-  let inside = false
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i]
-    const [xj, yj] = ring[j]
-    if (yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside
-  }
-  return inside
 }

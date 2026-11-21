@@ -1,0 +1,62 @@
+name: Flight sim
+
+# Builds the PX4 SITL image and flies it: connect, check home is in Toronto,
+# arm, take off, hover, land. Runs when the sim changes, or on demand.
+on:
+  push:
+    branches: [main]
+    paths: ['sim/**', 'docker-compose.yml', '.github/workflows/sim.yml']
+  pull_request:
+    paths: ['sim/**', 'docker-compose.yml', '.github/workflows/sim.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: sim-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flight-test:
+    name: PX4 SITL flight test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # First run compiles PX4 (~15-20 min on a GitHub runner); later runs reuse the cache.
+      - name: Build PX4 image
+        uses: docker/build-push-action@v6
+        with:
+          context: sim/px4
+          build-args: PX4_VERSION=v1.16.2
+          tags: tdot/px4-sitl:v1.16.2
+          load: true
+          cache-from: type=gha,scope=px4-sitl
+          cache-to: type=gha,scope=px4-sitl,mode=max
+
+      - name: Start PX4
+        run: docker compose up -d --no-build px4
+
+      - name: Wait until PX4 is ready for takeoff
+        run: |
+          for i in $(seq 1 60); do
+            if docker compose logs px4 | grep -q "Ready for takeoff"; then
+              echo "PX4 ready after ~$((i * 2)) s"; exit 0
+            fi
+            sleep 2
+          done
+          echo "PX4 did not become ready in 120 s"; exit 1
+
+      - name: Flight test
+        run: |
+          docker run --rm --network container:tdot-px4 -v "$PWD/sim/tools:/tools:ro" \
+            python:3.12-slim sh -c "pip install -q --root-user-action=ignore -r /tools/requirements.txt && python -u /tools/flight_test.py"
+
+      - name: PX4 log (on failure)
+        if: failure()
+        run: docker compose logs --no-color px4 | tail -200
+
+      - name: Stop PX4
+        if: always()
+        run: docker compose down
