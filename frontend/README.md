@@ -26,7 +26,26 @@ downloads datasets from open.toronto.ca, trims and simplifies them with mapshape
 and writes GeoJSON to `public/data/toronto/` (git-ignored). Downloads are cached
 in `.data-cache/`; pass `-- --refresh` to re-download.
 
-The app reads that data only through [src/data/torontoData.ts](src/data/torontoData.ts),
+| Dataset | Output |
+|---|---|
+| City boundary | `boundary.geojson` |
+| Neighbourhoods (158) | `neighbourhoods.geojson` |
+| 3D Massing (~430k buildings, newest year) | `massing/{col}_{row}.json` in ~1 km grid tiles + `massing/index.json` (~130 MB total) |
+
+The massing step takes ~20 s and needs a few GB of RAM. The grid is defined once in
+[src/data/massingGrid.ts](src/data/massingGrid.ts) and shared by the script and the app,
+which loads tiles within ~2.5 km of the camera.
+
+City elevations are metres above sea level; Cesium uses the WGS84 ellipsoid. The
+conversion (`TORONTO_GEOID_OFFSET_M` in [src/config.ts](src/config.ts)) was measured
+against Google's 3D Tiles.
+
+The app reads data only through [src/data/torontoData.ts](src/data/torontoData.ts),
 so it can later point at a backend instead.
+
+## Controls
+
+Left-drag pans, right-drag/scroll zooms, Ctrl+drag tilts. Click a neighbourhood or
+building for details. Temporary keys: **G** toggles Google 3D tiles, **M** toggles massing.
 
 Contains information licensed under the Open Government Licence – Toronto.

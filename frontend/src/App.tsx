@@ -17,6 +17,9 @@ function App() {
           <code>frontend/.env.local</code> and restart the dev server.
         </div>
       )}
+      <div className="key-hint">
+        <kbd>G</kbd> Google 3D · <kbd>M</kbd> Massing
+      </div>
       {dataError && <div className="banner banner-bottom">City of Toronto layers unavailable: {dataError}</div>}
     </>
   )

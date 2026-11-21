@@ -6,6 +6,8 @@
  * else in the app needs to change.
  */
 
+import type { MassingIndex, MassingProps } from './massingGrid'
+
 // Minimal GeoJSON types for the shapes we produce (Polygon / MultiPolygon only).
 export type Position = [number, number] | [number, number, number]
 export type PolygonGeometry =
@@ -51,3 +53,15 @@ async function getJson<T>(file: string): Promise<T> {
 export const loadManifest = () => getJson<DataManifest>('manifest.json')
 export const loadBoundary = () => getJson<FeatureCollection<BoundaryProps>>('boundary.geojson')
 export const loadNeighbourhoods = () => getJson<FeatureCollection<NeighbourhoodProps>>('neighbourhoods.geojson')
+
+// --- 3D Massing (tiled) ---------------------------------------------------
+
+export type { MassingIndex, MassingProps, MassingTileInfo } from './massingGrid'
+
+export const loadMassingIndex = () => getJson<MassingIndex>('massing/index.json')
+
+export async function loadMassingTile(key: string, signal?: AbortSignal): Promise<FeatureCollection<MassingProps>> {
+  const res = await fetch(`${BASE}massing/${key}.json`, { signal })
+  if (!res.ok) throw new Error(`Failed to load massing tile ${key}: HTTP ${res.status}`)
+  return (await res.json()) as FeatureCollection<MassingProps>
+}

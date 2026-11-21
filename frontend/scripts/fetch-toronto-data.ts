@@ -11,10 +11,17 @@
  */
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import {
+  MAPSHAPER_CELL_EXPRESSION,
+  MASSING_GRID,
+  type MassingIndex,
+  type MassingProps,
+  type MassingTileInfo,
+} from '../src/data/massingGrid.ts'
 
 const run = promisify(execFile)
 
@@ -22,7 +29,7 @@ const CKAN_API = 'https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const CACHE_DIR = path.join(ROOT, '.data-cache')
 const OUT_DIR = path.join(ROOT, 'public', 'data', 'toronto')
-const MAPSHAPER = path.join(ROOT, 'node_modules', '.bin', 'mapshaper')
+const MAPSHAPER = path.join(ROOT, 'node_modules', 'mapshaper', 'bin', 'mapshaper')
 const REFRESH = process.argv.includes('--refresh')
 
 type CkanResource = { id: string; name: string; format: string; url: string; last_modified?: string }
@@ -96,33 +103,157 @@ async function extractShapefile(zipPath: string, destDir: string): Promise<strin
   return path.join(destDir, shps[0])
 }
 
-async function processDataset(ds: Dataset) {
-  console.log(`\n▸ ${ds.id} (${ds.packageId})`)
-  const pkg = await getPackage(ds.packageId)
-  const resource = pkg.resources.find(ds.pickResource)
-  if (!resource) throw new Error(`No matching resource in ${ds.packageId}: ${pkg.resources.map((r) => r.name).join(', ')}`)
+/** Runs mapshaper with enough memory for the citywide massing file. */
+function mapshaper(args: string[]) {
+  return run(process.execPath, ['--max-old-space-size=8192', MAPSHAPER, ...args], { maxBuffer: 64 * 1024 * 1024 })
+}
 
-  const cached = path.join(CACHE_DIR, `${ds.id}.${ds.cacheExt}`)
+/** Finds a resource in a CKAN package and downloads it to the cache (unless already cached). */
+async function fetchResource(
+  packageId: string,
+  pick: (resources: CkanResource[]) => CkanResource | undefined,
+  cacheName: (r: CkanResource) => string,
+) {
+  const pkg = await getPackage(packageId)
+  const resource = pick(pkg.resources)
+  if (!resource) throw new Error(`No matching resource in ${packageId}: ${pkg.resources.map((r) => r.name).join(', ')}`)
+
+  const cached = path.join(CACHE_DIR, cacheName(resource))
   if (REFRESH || !existsSync(cached)) {
     console.log(`  downloading "${resource.name}"`)
     await download(resource.url, cached)
   } else {
     console.log(`  using cached "${resource.name}" (pass --refresh to re-download)`)
   }
+  return { pkg, resource, cached }
+}
 
-  const input = ds.cacheExt === 'zip' ? await extractShapefile(cached, path.join(CACHE_DIR, ds.id)) : cached
-  const out = path.join(OUT_DIR, `${ds.id}.geojson`)
-  await run(MAPSHAPER, ['-i', input, ...ds.mapshaper, '-o', out, 'format=geojson', 'geojson-type=FeatureCollection', 'precision=0.000001'])
-  console.log(`  wrote ${path.relative(ROOT, out)}`)
-
+function manifestEntry(id: string, file: string, pkg: CkanPackage, resource: CkanResource) {
   return {
-    id: ds.id,
-    file: `${ds.id}.geojson`,
+    id,
+    file,
     source: `https://open.toronto.ca/dataset/${pkg.name}/`,
     title: pkg.title,
     resource: resource.name,
     lastRefreshed: pkg.last_refreshed ?? resource.last_modified ?? null,
   }
+}
+
+async function processDataset(ds: Dataset) {
+  console.log(`\n▸ ${ds.id} (${ds.packageId})`)
+  const { pkg, resource, cached } = await fetchResource(
+    ds.packageId,
+    (rs) => rs.find(ds.pickResource),
+    () => `${ds.id}.${ds.cacheExt}`,
+  )
+
+  const input = ds.cacheExt === 'zip' ? await extractShapefile(cached, path.join(CACHE_DIR, ds.id)) : cached
+  const out = path.join(OUT_DIR, `${ds.id}.geojson`)
+  await mapshaper(['-i', input, ...ds.mapshaper, '-o', out, 'format=geojson', 'geojson-type=FeatureCollection', 'precision=0.000001'])
+  console.log(`  wrote ${path.relative(ROOT, out)}`)
+
+  return manifestEntry(ds.id, `${ds.id}.geojson`, pkg, resource)
+}
+
+/**
+ * 3D Massing: ~430k building footprints with heights. Too big for one file, so
+ * it's split into ~1 km grid tiles (see src/data/massingGrid.ts) that the app
+ * loads around the camera, plus massing/index.json describing every tile.
+ */
+async function processMassing() {
+  console.log('\n▸ massing (3d-massing)')
+  // Newest year of the extruded-footprint shapefile, e.g. 3DMassingShapefile_2025_WGS84.zip.
+  const yearOf = (r: CkanResource) => Number(/^3DMassingShapefile_(\d{4})_WGS84\.zip$/.exec(r.name)?.[1] ?? 0)
+  const { pkg, resource, cached } = await fetchResource(
+    '3d-massing',
+    (rs) => rs.filter(yearOf).sort((a, b) => yearOf(b) - yearOf(a))[0],
+    (r) => `massing-${yearOf(r)}.zip`,
+  )
+  const year = yearOf(resource)
+  const shp = await extractShapefile(cached, path.join(CACHE_DIR, 'massing'))
+
+  // Write to a temp dir, then swap in, so a failed run never leaves half a tile set.
+  const outDir = path.join(OUT_DIR, 'massing')
+  const tmpDir = `${outDir}.tmp`
+  await rm(tmpDir, { recursive: true, force: true })
+  await mkdir(tmpDir, { recursive: true })
+
+  console.log('  reprojecting, simplifying and splitting into tiles (~15 s)…')
+  await mapshaper([
+    '-i', shp,
+    // Despite "WGS84" in the file name, the data is Web Mercator metres.
+    '-proj', 'wgs84',
+    // 0.5 m tolerance removes redundant vertices without visibly changing footprints.
+    '-simplify', 'dp', 'interval=0.5', 'keep-shapes',
+    '-each', [
+      `cell = ${MAPSHAPER_CELL_EXPRESSION}`,
+      'h = Math.round(AVG_HEIGHT * 10) / 10',
+      'top = Math.round(Math.max(AVG_HEIGHT, MAX_HEIGHT) * 10) / 10',
+      // SURF_ELEV is 0 when unknown (~3k buildings); filled in below.
+      'g = SURF_ELEV > 0 ? Math.round(SURF_ELEV * 100) / 100 : null',
+    ].join(', '),
+    '-filter-fields', 'cell,h,top,g',
+    '-split', 'cell',
+    '-o', `${tmpDir}/`, 'format=geojson', 'precision=0.000001',
+  ])
+
+  // Post-process each tile: fill missing ground elevations, drop the cell field, build the index.
+  const tiles: Record<string, MassingTileInfo> = {}
+  let buildings = 0
+  let filled = 0
+  for (const file of (await readdir(tmpDir)).filter((f) => f.endsWith('.json')).sort()) {
+    const key = file.replace(/\.json$/, '')
+    const fc = JSON.parse(await readFile(path.join(tmpDir, file), 'utf8')) as {
+      type: 'FeatureCollection'
+      features: { properties: Partial<MassingProps> & { cell?: string; g: number | null }; geometry: { coordinates: unknown } }[]
+    }
+
+    const grounds = fc.features.map((f) => f.properties.g).filter((g): g is number => g != null).sort((a, b) => a - b)
+    const medianGround = grounds.length ? grounds[Math.floor(grounds.length / 2)] : null
+
+    let maxTop = 0
+    const bbox: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity]
+    const features = []
+    for (const f of fc.features) {
+      const { h, top } = f.properties
+      let g = f.properties.g
+      if (g == null) {
+        if (medianGround == null) continue // no way to place it vertically
+        g = medianGround
+        filled++
+      }
+      maxTop = Math.max(maxTop, top ?? 0)
+      extendBbox(bbox, f.geometry.coordinates)
+      features.push({ type: 'Feature', properties: { h, top, g }, geometry: f.geometry })
+    }
+    if (!features.length) continue
+
+    await writeFile(path.join(tmpDir, file), JSON.stringify({ type: 'FeatureCollection', features }))
+    tiles[key] = { n: features.length, maxTop, bbox: bbox.map((v) => Math.round(v * 1e6) / 1e6) as MassingTileInfo['bbox'] }
+    buildings += features.length
+  }
+
+  const index: MassingIndex = { grid: MASSING_GRID, year, buildings, tiles }
+  await writeFile(path.join(tmpDir, 'index.json'), JSON.stringify(index))
+  await rm(outDir, { recursive: true, force: true })
+  await rename(tmpDir, outDir)
+
+  console.log(`  wrote ${Object.keys(tiles).length} tiles, ${buildings.toLocaleString()} buildings (${filled.toLocaleString()} ground elevations filled from tile median)`)
+  return manifestEntry('massing', 'massing/index.json', pkg, resource)
+}
+
+/** Grows bbox to include every [lon, lat] in nested GeoJSON coordinates. */
+function extendBbox(bbox: [number, number, number, number], coords: unknown) {
+  if (!Array.isArray(coords)) return
+  if (typeof coords[0] === 'number') {
+    const [lon, lat] = coords as number[]
+    if (lon < bbox[0]) bbox[0] = lon
+    if (lat < bbox[1]) bbox[1] = lat
+    if (lon > bbox[2]) bbox[2] = lon
+    if (lat > bbox[3]) bbox[3] = lat
+    return
+  }
+  for (const c of coords) extendBbox(bbox, c)
 }
 
 async function main() {
@@ -131,6 +262,7 @@ async function main() {
 
   const datasets = []
   for (const ds of DATASETS) datasets.push(await processDataset(ds))
+  datasets.push(await processMassing())
 
   const manifest = {
     generatedAt: new Date().toISOString(),

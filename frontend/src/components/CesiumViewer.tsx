@@ -6,11 +6,14 @@ import {
   Ion,
   Math as CesiumMath,
   OpenStreetMapImageryProvider,
+  Terrain,
   Viewer,
+  type Cesium3DTileset,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { loadPhotorealisticTiles } from '../cesium/photorealisticTiles'
-import { loadBoundary, loadManifest, loadNeighbourhoods } from '../data/torontoData'
+import { loadBoundary, loadManifest, loadMassingIndex, loadNeighbourhoods } from '../data/torontoData'
+import { installMassingPicking, MassingLayer } from '../layers/massingLayer'
 import { createBoundaryLayer, createNeighbourhoodsLayer } from '../layers/torontoLayers'
 import { config, TORONTO_HOME } from '../config'
 
@@ -47,6 +50,8 @@ export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
       baseLayer: hasIon
         ? undefined
         : new ImageryLayer(new OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })),
+      // Real ground heights for when the Google tiles are hidden (massing blocks then stand on terrain).
+      terrain: hasIon ? Terrain.fromWorldTerrain() : undefined,
       baseLayerPicker: false,
       // Google's terms only allow the Google geocoder with these tiles; we use none.
       geocoder: false,
@@ -67,6 +72,12 @@ export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
       duration: 3,
     })
 
+    // Dev only: lets you poke at the scene from the browser console (window.viewer).
+    if (import.meta.env.DEV) (window as unknown as { viewer: Viewer }).viewer = viewer
+
+    let googleTiles: Cesium3DTileset | undefined
+    let massing: MassingLayer | undefined
+
     const source: TilesSource | null = hasGoogleKey ? 'google' : hasIon ? 'ion' : null
     if (!source) {
       report({ state: 'error', source: null, message: 'No Cesium ion token or Google Maps key set.' })
@@ -79,7 +90,7 @@ export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
             tileset.destroy()
             return
           }
-          viewer.scene.primitives.add(tileset)
+          googleTiles = viewer.scene.primitives.add(tileset)
           // The Google mesh includes its own ground, so hide the globe underneath it.
           viewer.scene.globe.show = false
           report({ state: 'ready', source })
@@ -109,8 +120,38 @@ export function CesiumViewer({ onTilesStatus, onDataError }: Props) {
         onDataErrorRef.current?.(err instanceof Error ? err.message : String(err))
       })
 
+    // 3D Massing buildings, loaded in tiles around the camera.
+    const uninstallPicking = installMassingPicking(viewer)
+    loadMassingIndex()
+      .then((index) => {
+        if (viewer.isDestroyed()) return
+        massing = new MassingLayer(viewer, index)
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load massing index', err)
+        if (viewer.isDestroyed()) return
+        onDataErrorRef.current?.(err instanceof Error ? err.message : String(err))
+      })
+
+    // Temporary keyboard toggles until the layer panel exists (chunk 3c):
+    //   G = Google 3D tiles (shows the terrain globe instead), M = massing buildings.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.target instanceof HTMLInputElement) return
+      const key = e.key.toLowerCase()
+      if (key === 'g' && googleTiles) {
+        googleTiles.show = !googleTiles.show
+        viewer.scene.globe.show = !googleTiles.show
+      } else if (key === 'm' && massing) {
+        massing.show = !massing.show
+      }
+    }
+    window.addEventListener('keydown', onKey)
+
     // React StrictMode mounts effects twice in dev, so always clean up.
     return () => {
+      window.removeEventListener('keydown', onKey)
+      uninstallPicking()
+      massing?.destroy()
       if (!viewer.isDestroyed()) viewer.destroy()
     }
   }, [])
