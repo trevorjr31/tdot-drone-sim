@@ -76,6 +76,8 @@ export class DroneView {
   private readonly modeListeners = new Set<(m: CameraMode) => void>()
   private readonly hudListeners = new Set<(h: HudInfo | null) => void>()
   private readonly cleanups: (() => void)[] = []
+  private unsubscribeSource: (() => void) | undefined
+  private source: DroneSource | undefined
   private destroyed = false
 
   constructor(viewer: Viewer, source: DroneSource) {
@@ -83,11 +85,21 @@ export class DroneView {
     this.buildModel()
     this.buildOverlays()
 
+    this.setSource(source)
+    this.cleanups.push(viewer.scene.preRender.addEventListener(() => this.onFrame()))
+  }
+
+  /** Switch where the drone's state comes from (demo flight ⇄ PX4). Clears the trail. */
+  setSource(source: DroneSource) {
+    if (source === this.source) return
+    this.unsubscribeSource?.()
+    this.source = source
+    this.buffer.clear()
+    this.clearTrail()
+    this.aglM = null
+    this.groundPosition = undefined
     if (source.latest) this.buffer.push(source.latest, performance.now())
-    this.cleanups.push(
-      source.subscribe((s) => this.buffer.push(s, performance.now())),
-      viewer.scene.preRender.addEventListener(() => this.onFrame()),
-    )
+    this.unsubscribeSource = source.subscribe((s) => this.buffer.push(s, performance.now()))
   }
 
   get cameraMode() {
@@ -129,6 +141,7 @@ export class DroneView {
   destroy() {
     if (this.destroyed) return
     this.destroyed = true
+    this.unsubscribeSource?.()
     this.cleanups.forEach((fn) => fn())
     if (!this.viewer.isDestroyed()) {
       this.setCameraMode('free')
@@ -182,7 +195,14 @@ export class DroneView {
     const state = this.current
     for (const part of this.parts) part.entity.show = this.hasPose && this.mode !== 'fpv' // don't sit inside the model
     for (const e of this.others) if (e.id !== 'drone-trail') e.show = this.hasPose
-    if (!state) return
+    if (!state) {
+      // No data (e.g. PX4 selected but not running): clear the HUD rather than show stale numbers.
+      if (now - this.lastHudAt >= HUD_INTERVAL_MS) {
+        this.lastHudAt = now
+        for (const listener of this.hudListeners) listener(null)
+      }
+      return
+    }
 
     // Trail: a point every TRAIL_INTERVAL_MS of flight time while airborne.
     if (state.inAir && state.timeMs - this.lastTrailAt >= TRAIL_INTERVAL_MS) {

@@ -12,10 +12,13 @@ package name when `mavsdk` v4 switched to a new native API.
 """
 
 import asyncio
+import os
 import sys
 
 from mavsdk_grpc import System
 
+# PX4's ground-station link (14550), so this can run while the bridge holds the API link (14540).
+MAVLINK_URL = os.environ.get("MAVLINK_URL", "udpin://0.0.0.0:14550")
 TAKEOFF_ALT_M = 20.0
 # Rough box around the City of Toronto, to confirm the home position took effect.
 TORONTO_BOX = {"lat": (43.58, 43.86), "lon": (-79.64, -79.11)}
@@ -43,7 +46,7 @@ async def wait_for(stream, predicate, timeout, what):
 
 async def main():
     drone = System()
-    await drone.connect(system_address="udpin://0.0.0.0:14540")
+    await drone.connect(system_address=MAVLINK_URL)
 
     print("Waiting for PX4…")
     await wait_for(drone.core.connection_state(), lambda s: s.is_connected, 60, "connection")

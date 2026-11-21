@@ -1,1 +1,2 @@
 mavsdk-grpc>=4,<5
+websockets>=14,<16

@@ -574,3 +574,67 @@ body,
     gap: 2px 12px;
   }
 }
+
+.drone-panel__status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.drone-panel__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--panel-muted);
+}
+
+.drone-panel__status.is-connected .drone-panel__dot {
+  background: #52c77a;
+  box-shadow: 0 0 6px rgba(82, 199, 122, 0.8);
+}
+
+.drone-panel__status.is-connecting .drone-panel__dot,
+.drone-panel__status.is-px4-offline .drone-panel__dot {
+  background: var(--panel-accent);
+}
+
+.drone-panel__status.is-bridge-offline .drone-panel__dot {
+  background: #e63946;
+}
+
+.drone-panel__hint {
+  color: var(--panel-muted);
+  font-size: 11px;
+}
+
+.drone-panel__hint code {
+  color: var(--panel-text);
+}
+
+.drone-panel__alt {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--panel-muted);
+  font-size: 12px;
+}
+
+.drone-panel__alt input {
+  width: 52px;
+  padding: 5px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--panel-text);
+  font: 12px system-ui, sans-serif;
+}
+
+.drone-panel__error {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(230, 57, 70, 0.18);
+  color: #ffb3b9;
+  font-size: 12px;
+}

@@ -1,7 +1,7 @@
 # Drone simulation services. The React app still runs on the host (`npm run dev` in frontend/).
 #
-#   docker compose up -d px4      # start PX4 SITL
-#   docker compose logs -f px4    # watch its console
+#   docker compose up -d          # start PX4 + bridge
+#   docker compose logs -f        # watch their output
 #   docker compose down           # stop everything
 
 services:
@@ -18,7 +18,25 @@ services:
       PX4_HOME_LAT: "43.65255"
       PX4_HOME_LON: "-79.38330"
       PX4_HOME_ALT: "92"
+    # The bridge shares this container's network (PX4 only sends MAVLink to localhost),
+    # so the bridge's WebSocket port is published here. Bound to localhost only.
+    ports:
+      - "127.0.0.1:8765:8765"
     # PX4's interactive console needs a TTY to stay up when detached.
     stdin_open: true
     tty: true
+    restart: unless-stopped
+
+  bridge:
+    build:
+      context: ./sim/bridge
+    image: tdot/px4-bridge:dev
+    container_name: tdot-bridge
+    network_mode: "service:px4"
+    depends_on:
+      - px4
+    environment:
+      MAVLINK_URL: udpin://0.0.0.0:14540
+      WS_PORT: "8765"
+      STATE_RATE_HZ: "20"
     restart: unless-stopped

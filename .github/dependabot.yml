@@ -15,6 +15,16 @@ updates:
     schedule:
       interval: weekly
 
+  - package-ecosystem: pip
+    directory: /sim/bridge
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /sim/bridge
+    schedule:
+      interval: weekly
+
   - package-ecosystem: docker
     directory: /sim/px4
     schedule:

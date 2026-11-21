@@ -1,7 +1,8 @@
 name: Flight sim
 
-# Builds the PX4 SITL image and flies it: connect, check home is in Toronto,
-# arm, take off, hover, land. Runs when the sim changes, or on demand.
+# Builds PX4 SITL and the bridge, then flies twice: directly over MAVLink, and
+# through the bridge's WebSocket the way the browser does. Runs when the sim
+# changes, or on demand.
 on:
   push:
     branches: [main]
@@ -16,7 +17,7 @@ concurrency:
 
 jobs:
   flight-test:
-    name: PX4 SITL flight test
+    name: PX4 SITL + bridge flight tests
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -35,8 +36,17 @@ jobs:
           cache-from: type=gha,scope=px4-sitl
           cache-to: type=gha,scope=px4-sitl,mode=max
 
-      - name: Start PX4
-        run: docker compose up -d --no-build px4
+      - name: Build bridge image
+        uses: docker/build-push-action@v6
+        with:
+          context: sim/bridge
+          tags: tdot/px4-bridge:dev
+          load: true
+          cache-from: type=gha,scope=px4-bridge
+          cache-to: type=gha,scope=px4-bridge,mode=max
+
+      - name: Start PX4 and bridge
+        run: docker compose up -d --no-build
 
       - name: Wait until PX4 is ready for takeoff
         run: |
@@ -48,14 +58,23 @@ jobs:
           done
           echo "PX4 did not become ready in 120 s"; exit 1
 
-      - name: Flight test
+      - name: Install test tools
         run: |
-          docker run --rm --network container:tdot-px4 -v "$PWD/sim/tools:/tools:ro" \
-            python:3.12-slim sh -c "pip install -q --root-user-action=ignore -r /tools/requirements.txt && python -u /tools/flight_test.py"
+          docker build -t tdot/sim-tools -f - sim/tools <<'EOF'
+          FROM python:3.12-slim
+          COPY requirements.txt .
+          RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
+          EOF
 
-      - name: PX4 log (on failure)
+      - name: Flight test (direct MAVLink)
+        run: docker run --rm --network container:tdot-px4 -v "$PWD/sim/tools:/tools:ro" tdot/sim-tools python -u /tools/flight_test.py
+
+      - name: Flight test (through the bridge's WebSocket)
+        run: docker run --rm --network container:tdot-px4 -v "$PWD/sim/tools:/tools:ro" tdot/sim-tools python -u /tools/bridge_test.py
+
+      - name: Logs (on failure)
         if: failure()
-        run: docker compose logs --no-color px4 | tail -200
+        run: docker compose logs --no-color | tail -300
 
       - name: Stop PX4
         if: always()

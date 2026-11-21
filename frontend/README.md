@@ -60,10 +60,18 @@ and the City's 158 neighbourhoods:
 
 ## Drone
 
-The **Drone** panel (left) starts a demo flight: a scripted quadcopter that takes off
-from Nathan Phillips Square, flies west along Queen St W to Trinity Bellwoods and back,
-then lands (~8 min). It stands in for PX4 until the bridge exists, and produces the same
-state PX4 telemetry will ([src/drone/types.ts](src/drone/types.ts)).
+The **Drone** panel (left) has two sources, both producing the same
+[`DroneState`](src/drone/types.ts):
+
+- **Demo flight**: a scripted quadcopter that takes off from Nathan Phillips Square, flies
+  west along Queen St W to Trinity Bellwoods and back, then lands (~8 min). No PX4 needed.
+- **PX4 (live)**: real PX4 telemetry via the bridge (`docker compose up -d` at the repo
+  root; see the top-level README). **Take off** (with height), **Hold**, **Return** and
+  **Land** command PX4; refusals (e.g. pre-arm checks failing) show in the panel. The
+  connection retries automatically, so the bridge can start before or after the app.
+  Override the address with `VITE_BRIDGE_URL`.
+
+The chosen source is remembered in this browser.
 
 - **Cameras** (**C** cycles): *Chase* follows behind, *FPV* is the drone's-eye view,
   *Free* gives the mouse back. Searching for a place or pressing Home switches to Free.
