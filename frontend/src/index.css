@@ -388,3 +388,189 @@ body,
     width: 220px;
   }
 }
+
+/* --- Drone panel --------------------------------------------------------- */
+
+.drone-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.drone-panel__source {
+  color: var(--panel-muted);
+  font-size: 12px;
+}
+
+.drone-panel__buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.drone-panel__label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+  color: var(--panel-muted);
+  font-size: 12px;
+}
+
+.drone-panel__trail {
+  padding: 4px 0 0;
+}
+
+.btn {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--panel-text);
+  font: 600 12px system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn--primary {
+  border-color: rgba(255, 209, 102, 0.5);
+  background: rgba(255, 209, 102, 0.18);
+  color: var(--panel-accent);
+}
+
+.segmented {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--panel-border);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.segmented__option {
+  flex: 1;
+  padding: 5px 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--panel-muted);
+  font: 600 12px system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.segmented__option.is-active {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--panel-text);
+}
+
+/* --- Heads-up display ------------------------------------------------------ */
+
+.hud {
+  position: absolute;
+  right: 12px;
+  bottom: 36px;
+  z-index: 10;
+  /* Bottom-right keeps it clear of the sidebar (left) and Cesium's credits (bottom-left). */
+  max-width: min(440px, calc(100vw - 24px));
+  padding: 8px 14px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  color: var(--panel-text);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud__status {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.hud__mode {
+  color: var(--panel-muted);
+}
+
+.hud__mode.is-armed {
+  color: var(--panel-accent);
+}
+
+.hud__armed {
+  color: var(--panel-muted);
+}
+
+.hud__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+
+.hud__readout {
+  display: flex;
+  min-width: 56px;
+  flex-direction: column;
+}
+
+.hud__label {
+  color: var(--panel-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.hud__value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.hud__readout.is-big .hud__value {
+  font-size: 22px;
+}
+
+.hud__unit {
+  margin-left: 3px;
+  color: var(--panel-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.hud__readout.is-warn .hud__value {
+  color: #ff8a93;
+}
+
+.hud__warning {
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(230, 57, 70, 0.2);
+  color: #ffb3b9;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .hud {
+    left: 12px;
+    bottom: 30px;
+    padding: 6px 10px 8px;
+  }
+  .hud__grid {
+    gap: 2px 12px;
+  }
+}

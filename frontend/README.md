@@ -58,6 +58,25 @@ and the City's 158 neighbourhoods:
   defined by name/address and looked up once per browser; recent searches are remembered.
 - The Home button returns to the downtown view.
 
+## Drone
+
+The **Drone** panel (left) starts a demo flight: a scripted quadcopter that takes off
+from Nathan Phillips Square, flies west along Queen St W to Trinity Bellwoods and back,
+then lands (~8 min). It stands in for PX4 until the bridge exists, and produces the same
+state PX4 telemetry will ([src/drone/types.ts](src/drone/types.ts)).
+
+- **Cameras** (**C** cycles): *Chase* follows behind, *FPV* is the drone's-eye view,
+  *Free* gives the mouse back. Searching for a place or pressing Home switches to Free.
+- **HUD** (bottom-right): height above whatever is below (ground or roof), altitude above
+  sea level, speed, climb, heading, distance from home, battery, flight mode, armed state,
+  and a warning above Transport Canada's 122 m (400 ft) limit.
+- The model is drawn 4× real size so it's visible from the chase camera; a red dot marks
+  it from far away, a dashed line drops to the ground, and a yellow trail shows the path.
+- No collisions yet: the drone can pass through buildings (chunk 4e).
+
+In dev builds `window.viewer` and `window.tdot` (`{ demo, droneView }`) are available in
+the browser console for debugging.
+
 ## Controls
 
 Left-drag pans, right-drag/scroll zooms, Ctrl+drag tilts. Click a neighbourhood or

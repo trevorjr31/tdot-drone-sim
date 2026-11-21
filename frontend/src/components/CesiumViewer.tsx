@@ -15,6 +15,8 @@ import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { PlaceNavigator } from '../cesium/placeNavigation'
 import { loadPhotorealisticTiles } from '../cesium/photorealisticTiles'
 import { loadBoundary, loadManifest, loadMassingIndex, loadNeighbourhoods } from '../data/torontoData'
+import { DroneView } from '../drone/droneView'
+import type { DroneSource } from '../drone/types'
 import type { LayerId, LayerStatus, LayerVisibility } from '../layers/layerState'
 import { installMassingPicking, MassingLayer } from '../layers/massingLayer'
 import { createBoundaryLayer, createNeighbourhoodsLayer } from '../layers/torontoLayers'
@@ -34,6 +36,10 @@ type Props = {
   onLayerStatus?: (layer: LayerId, status: LayerStatus, message?: string) => void
   /** Called once the map can be searched and navigated (and with null when it goes away). */
   onMapReady?: (api: MapApi | null) => void
+  /** Where the drone's state comes from (demo flight now, PX4 bridge later). */
+  droneSource?: DroneSource
+  /** Called with the drone view once created (and null when it goes away). */
+  onDroneView?: (view: DroneView | null) => void
 }
 
 /** Cesium objects behind each toggleable layer, filled in as they finish loading. */
@@ -57,7 +63,7 @@ function applyVisibility(h: LayerHandles, v: LayerVisibility) {
   if (h.massing) h.massing.show = v.massing
 }
 
-export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapReady }: Props) {
+export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapReady, droneSource, onDroneView }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const handles = useRef<LayerHandles>({})
   // Keep the latest props without re-running the setup effect (which would rebuild the viewer).
@@ -69,6 +75,10 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
   onLayerStatusRef.current = onLayerStatus
   const onMapReadyRef = useRef(onMapReady)
   onMapReadyRef.current = onMapReady
+  const droneSourceRef = useRef(droneSource)
+  droneSourceRef.current = droneSource
+  const onDroneViewRef = useRef(onDroneView)
+  onDroneViewRef.current = onDroneView
 
   // Apply toggles whenever they change.
   useEffect(() => applyVisibility(handles.current, visibility), [visibility])
@@ -120,11 +130,14 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
 
     // Search + fly-to. The Home button flies to the downtown view instead of the whole Earth.
     const navigator = new PlaceNavigator(viewer)
+    const droneView = droneSourceRef.current ? new DroneView(viewer, droneSourceRef.current) : undefined
     viewer.homeButton.viewModel.command.beforeExecute.addEventListener((e: { cancel: boolean }) => {
       e.cancel = true
+      droneView?.setCameraMode('free') // the Home view needs the map camera back
       navigator.flyHome()
     })
     onMapReadyRef.current?.(navigator)
+    onDroneViewRef.current?.(droneView ?? null)
 
     // Dev only: lets you poke at the scene from the browser console (window.viewer).
     if (import.meta.env.DEV) (window as unknown as { viewer: Viewer }).viewer = viewer
@@ -200,6 +213,8 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
     // React StrictMode mounts effects twice in dev, so always clean up.
     return () => {
       onMapReadyRef.current?.(null)
+      onDroneViewRef.current?.(null)
+      droneView?.destroy()
       uninstallPicking()
       h.massing?.destroy()
       if (!viewer.isDestroyed()) viewer.destroy()
