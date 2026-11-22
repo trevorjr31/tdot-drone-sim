@@ -92,7 +92,7 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   that height on the way). *Back* returns to the controls.
 - **Camera**: always a chase camera on the drone. It starts behind and above it and swings
   round to stay behind as it turns; **drag** to rotate around the drone, **scroll** to zoom
-  (3 m to 30 km). Your angle and zoom are kept as it flies. There's no free camera or Home
+  (3 m to 30 km), straight through any building in the way. Your angle and zoom are kept as it flies. There's no free camera or Home
   button for now.
 - **HUD** (bottom-right): height above whatever is below (ground or roof), altitude above
   sea level, speed, climb, heading, distance from home, battery, flight mode, armed state,
@@ -120,7 +120,8 @@ the browser console for debugging.
 ## Controls
 
 Drag rotates around the drone, scroll zooms. Click a neighbourhood or
-building for details.
+building for details: the card opens folded to just its title (the name or address);
+the ▸ button, or a click on the title, shows the details.
 
 The map is always the photorealistic 3D city. **Settings** (the gear, top-right) has the **Layers** toggles for
 the two overlays, **N** neighbourhoods and **B** city boundary; your choices are

@@ -764,6 +764,40 @@ body,
   display: none;
 }
 
+/* Collapse toggle, where the camera button was (left of the title). */
+.cesium-infoBox button.infobox-toggle {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  line-height: 20px;
+  color: #edffff;
+}
+.cesium-infoBox button.infobox-toggle:hover {
+  background: #888;
+  color: #000;
+}
+.cesium-infoBox .cesium-infoBox-title {
+  cursor: pointer;
+  user-select: none;
+}
+/* Folded: just the title bar. Zero height rather than display:none, so the details are
+   still laid out and Cesium can measure them (it sizes the frame when they change). */
+.cesium-infoBox.is-collapsed .cesium-infoBox-iframe {
+  display: block; /* inline frames keep a line box even at zero height */
+  height: 0 !important;
+  visibility: hidden;
+}
+.cesium-infoBox.is-collapsed .cesium-infoBox-title {
+  border-bottom-left-radius: 7px;
+}
+
 /* --- Settings (top-right, where Cesium's Home button was) ------------------- */
 
 .settings {

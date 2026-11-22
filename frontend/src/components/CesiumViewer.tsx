@@ -18,6 +18,7 @@ import { loadBoundary, loadManifest, loadNeighbourhoods } from '../data/torontoD
 import { DroneView } from '../drone/droneView'
 import type { DroneSource } from '../drone/types'
 import { installBuildingPicking } from '../layers/buildingPicking'
+import { installInfoBoxCollapse } from '../layers/infoBoxCollapse'
 import type { LayerId, LayerStatus, LayerVisibility } from '../layers/layerState'
 import { createBoundaryLayer, createNeighbourhoodsLayer } from '../layers/torontoLayers'
 import { config, TORONTO_HOME } from '../config'
@@ -190,6 +191,7 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
     // City 3D Massing isn't drawn (the map shows only the photorealistic tiles), but it's
     // used for building collisions (useCollisions) and for building info on click.
     const uninstallPicking = installBuildingPicking(viewer)
+    const uninstallCollapse = installInfoBoxCollapse(viewer)
 
     // React StrictMode mounts effects twice in dev, so always clean up.
     return () => {
@@ -197,6 +199,7 @@ export function CesiumViewer({ visibility, onTilesStatus, onLayerStatus, onMapRe
       onDroneViewRef.current?.(null)
       droneView?.destroy()
       uninstallPicking()
+      uninstallCollapse()
       if (!viewer.isDestroyed()) viewer.destroy()
       if (handles.current === h) handles.current = {}
     }

@@ -114,6 +114,11 @@ export class DroneView {
     controller.enableLook = false
     controller.minimumZoomDistance = MIN_ZOOM_M
     controller.maximumZoomDistance = MAX_ZOOM_M
+    // Zoom through buildings: Cesium normally picks the surface under the screen centre
+    // and slows the zoom to a stop at it, so a building between the camera and the drone
+    // blocks zooming in. With no picking, zoom steps scale with the distance to the drone.
+    controller.minimumPickingTerrainHeight = 0
+    controller.minimumPickingTerrainDistanceWithInertia = 0
     this.buildModel()
     this.buildOverlays()
 
