@@ -7,7 +7,8 @@ const LOAD_WAIT_MS = 2000
 
 /**
  * Click info for the photorealistic map, at any zoom:
- *  - on a building: its heights (City of Toronto 3D Massing) and the neighbourhood it's in;
+ *  - on a building: its name and address (City of Toronto Address Points), heights
+ *    (3D Massing) and the neighbourhood it's in;
  *  - anywhere else: the neighbourhood (the Viewer's normal selection).
  *
  * Buildings are found by whether the clicked point is inside a City footprint,
@@ -57,7 +58,7 @@ export function installBuildingPicking(viewer: Viewer): () => void {
       return
     }
     viewer.selectedEntity = new Entity({
-      name: `Building (${(building.roofM - building.groundM).toFixed(0)} m)`,
+      name: buildingTitle(building),
       position,
       description: buildingDescription(building, neighbourhood),
     })
@@ -77,16 +78,29 @@ function buildingAt(c: BuildingCollider, lon: number, lat: number): Building | n
   return hits.reduce<Building | null>((best, b) => (!best || b.roofM > best.roofM ? b : best), null)
 }
 
+/** Infobox title: the place name, else the address, else the height. */
+function buildingTitle(b: Building): string {
+  const a = b.address
+  if (a?.place) return a.place
+  if (a) return a.count > 1 ? `${a.addresses[0]} (+${a.count - 1} more)` : a.addresses[0]
+  return `Building (${(b.roofM - b.groundM).toFixed(0)} m)`
+}
+
 function buildingDescription(b: Building, neighbourhood: Entity | undefined): string {
   const height = b.roofM - b.groundM
   const number = neighbourhood ? String(neighbourhood.id).split('-')[1] : null
+  const a = b.address
+  const more = a && a.count > a.addresses.length ? `<br>…and ${a.count - a.addresses.length} more` : ''
+  const row = (label: string, value: string) => `<tr><th>${label}</th><td>${value}</td></tr>`
   return `
     <table class="cesium-infoBox-defaultTable"><tbody>
-      <tr><th>Height (highest point)</th><td>${height.toFixed(1)} m</td></tr>
-      <tr><th>Ground elevation</th><td>${b.groundM.toFixed(1)} m above sea level</td></tr>
-      <tr><th>Roof elevation</th><td>${b.roofM.toFixed(1)} m above sea level</td></tr>
-      ${neighbourhood ? `<tr><th>Neighbourhood</th><td>${escapeHtml(neighbourhood.name ?? '')}${number ? ` (#${number})` : ''}</td></tr>` : ''}
-      <tr><th>Source</th><td>City of Toronto 3D Massing</td></tr>
+      ${a ? row(a.count > 1 ? 'Addresses' : 'Address', a.addresses.map(escapeHtml).join('<br>') + more) : row('Address', 'Not on record')}
+      ${neighbourhood ? row('Neighbourhood', `${escapeHtml(neighbourhood.name ?? '')}${number ? ` (#${number})` : ''}`) : ''}
+      ${a?.ward ? row('Ward', escapeHtml(a.ward)) : ''}
+      ${row('Height', `${height.toFixed(1)} m (highest point)`)}
+      ${row('Ground', `${b.groundM.toFixed(1)} m above sea level`)}
+      ${row('Roof', `${b.roofM.toFixed(1)} m above sea level`)}
+      ${row('Source', 'City of Toronto 3D Massing and Address Points')}
     </tbody></table>`
 }
 

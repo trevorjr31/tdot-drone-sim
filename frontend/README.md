@@ -31,9 +31,14 @@ in `.data-cache/`; pass `-- --refresh` to re-download.
 | City boundary | `boundary.geojson` |
 | Neighbourhoods (158) | `neighbourhoods.geojson` |
 | City boundary for PX4's geofence (~50 points) | `boundary-fence.geojson` |
-| 3D Massing (~430k buildings, newest year) | `massing/{col}_{row}.json` in ~1 km grid tiles + `massing/index.json` (~130 MB total) |
+| 3D Massing (~430k buildings, newest year) | `massing/{col}_{row}.json` in ~1 km grid tiles + `massing/index.json` (~145 MB total) |
+| Address Points (~525k civic addresses) | joined into the massing tiles (no file of its own) |
 
-The massing step takes ~20 s and needs a few GB of RAM. The grid is defined once in
+The massing step takes ~30 s and needs a few GB of RAM. It also downloads the City's
+address points (~175 MB CSV) and gives each building the addresses inside its footprint;
+a point on no footprint (many sit mid-lot) goes to the nearest building within 15 m that
+has no address of its own. About 93% of buildings end up with an address, plus a place
+name where the City has one (e.g. "Old City Hall") and the ward. The grid is defined once in
 [src/data/massingGrid.ts](src/data/massingGrid.ts) and shared by the script and the app,
 which loads tiles within ~2.5 km of the camera.
 
@@ -122,8 +127,8 @@ the two overlays, **N** neighbourhoods and **B** city boundary; your choices are
 remembered in this browser. The City 3D Massing data is never drawn: it runs in the
 background for building collisions, the HUD's building distance, and click info.
 
-Clicking works at any zoom: on a building you get its heights from the City footprint
-under the click *and* the neighbourhood it's in; anywhere else you get the neighbourhood.
+Clicking works at any zoom: on a building you get its name (or address) as the title,
+its addresses, neighbourhood, ward and heights from the City footprint under the click; anywhere else you get the neighbourhood.
 Buildings are matched by footprint only, because from far away the clicked 3D position
 is too imprecise vertically to tell a roof from the ground.
 

@@ -44,6 +44,8 @@ export type MassingIndex = {
   year: number
   buildings: number
   tiles: Record<string, MassingTileInfo>
+  /** Ward names; buildings refer to them by index (MassingProps.w). */
+  wards?: string[]
 }
 
 export type MassingProps = {
@@ -53,4 +55,12 @@ export type MassingProps = {
   top: number
   /** Ground elevation above sea level (SURF_ELEV), metres. Filled from the tile median when missing. */
   g: number
+  /** Addresses from the City's Address Points, up to 5, best first. Absent when none matched. */
+  a?: string[]
+  /** Total number of addresses, when more than `a` holds. */
+  an?: number
+  /** Place name, e.g. "Old City Hall". */
+  p?: string
+  /** Ward, as an index into MassingIndex.wards. */
+  w?: number
 }

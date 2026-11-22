@@ -23,6 +23,8 @@ import {
   type MassingProps,
   type MassingTileInfo,
 } from '../src/data/massingGrid.ts'
+import { joinAddresses, parseCsv, type AddressPoint, type Footprint } from '../src/data/addressJoin.ts'
+import { buildingsFromTile } from '../src/drone/collision.ts'
 
 const run = promisify(execFile)
 
@@ -209,23 +211,23 @@ async function processMassing() {
     '-o', `${tmpDir}/`, 'format=geojson', 'precision=0.000001',
   ])
 
-  // Post-process each tile: fill missing ground elevations, drop the cell field, build the index.
-  const tiles: Record<string, MassingTileInfo> = {}
-  let buildings = 0
+  // Post-process each tile: fill missing ground elevations, drop the cell field.
+  type Props = Pick<MassingProps, 'h' | 'top' | 'g'>
+  type Feat = { type: 'Feature'; properties: Props; geometry: { type: 'Polygon' | 'MultiPolygon'; coordinates: unknown } }
+  const tileFeatures = new Map<string, Feat[]>()
   let filled = 0
   for (const file of (await readdir(tmpDir)).filter((f) => f.endsWith('.json')).sort()) {
     const key = file.replace(/\.json$/, '')
     const fc = JSON.parse(await readFile(path.join(tmpDir, file), 'utf8')) as {
       type: 'FeatureCollection'
-      features: { properties: Partial<MassingProps> & { cell?: string; g: number | null }; geometry: { coordinates: unknown } }[]
+      features: { properties: Partial<MassingProps> & { cell?: string; g: number | null }; geometry: Feat['geometry'] }[]
     }
+    await rm(path.join(tmpDir, file))
 
     const grounds = fc.features.map((f) => f.properties.g).filter((g): g is number => g != null).sort((a, b) => a - b)
     const medianGround = grounds.length ? grounds[Math.floor(grounds.length / 2)] : null
 
-    let maxTop = 0
-    const bbox: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity]
-    const features = []
+    const features: Feat[] = []
     for (const f of fc.features) {
       const { h, top } = f.properties
       let g = f.properties.g
@@ -234,24 +236,103 @@ async function processMassing() {
         g = medianGround
         filled++
       }
-      maxTop = Math.max(maxTop, top ?? 0)
-      extendBbox(bbox, f.geometry.coordinates)
-      features.push({ type: 'Feature', properties: { h, top, g }, geometry: f.geometry })
+      features.push({ type: 'Feature', properties: { h: h!, top: top!, g }, geometry: f.geometry })
     }
-    if (!features.length) continue
-
-    await writeFile(path.join(tmpDir, file), JSON.stringify({ type: 'FeatureCollection', features }))
-    tiles[key] = { n: features.length, maxTop, bbox: bbox.map((v) => Math.round(v * 1e6) / 1e6) as MassingTileInfo['bbox'] }
-    buildings += features.length
+    if (features.length) tileFeatures.set(key, features)
   }
 
-  const index: MassingIndex = { grid: MASSING_GRID, year, buildings, tiles }
+  // Addresses: the City's address points matched to footprints, across all tiles at once
+  // (a point near a tile edge may belong to a building in the next tile).
+  const addressPoints = await loadAddressPoints()
+  const all: Feat[] = [...tileFeatures.values()].flat()
+  const footprints: Footprint[] = []
+  all.forEach((f, owner) => {
+    for (const b of buildingsFromTile({ type: 'FeatureCollection', features: [f] } as never)) footprints.push({ ...b, owner })
+  })
+  console.log(`  matching ${addressPoints.points.length.toLocaleString()} addresses to ${all.length.toLocaleString()} buildings…`)
+  const joined = joinAddresses(footprints, addressPoints.points)
+  const wards = [...new Set([...joined.values()].map((j) => j.ward).filter((w): w is string => !!w))].sort()
+  const wardIndex = new Map(wards.map((w, i) => [w, i]))
+
+  const tiles: Record<string, MassingTileInfo> = {}
+  let buildings = 0
+  let owner = 0
+  for (const [key, features] of tileFeatures) {
+    let maxTop = 0
+    const bbox: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity]
+    const out = features.map((f) => {
+      const j = joined.get(owner++)
+      maxTop = Math.max(maxTop, f.properties.top ?? 0)
+      extendBbox(bbox, f.geometry.coordinates)
+      const props: MassingProps = { ...f.properties }
+      if (j) {
+        props.a = j.addresses
+        if (j.count > j.addresses.length) props.an = j.count
+        if (j.place) props.p = j.place
+        if (j.ward) props.w = wardIndex.get(j.ward)
+      }
+      return { ...f, properties: props }
+    })
+    await writeFile(path.join(tmpDir, `${key}.json`), JSON.stringify({ type: 'FeatureCollection', features: out }))
+    tiles[key] = { n: out.length, maxTop, bbox: bbox.map((v) => Math.round(v * 1e6) / 1e6) as MassingTileInfo['bbox'] }
+    buildings += out.length
+  }
+  console.log(`  ${joined.size.toLocaleString()} buildings have an address (${((joined.size / buildings) * 100).toFixed(0)}%)`)
+
+  const index: MassingIndex = { grid: MASSING_GRID, year, buildings, tiles, wards }
   await writeFile(path.join(tmpDir, 'index.json'), JSON.stringify(index))
   await rm(outDir, { recursive: true, force: true })
   await rename(tmpDir, outDir)
 
   console.log(`  wrote ${Object.keys(tiles).length} tiles, ${buildings.toLocaleString()} buildings (${filled.toLocaleString()} ground elevations filled from tile median)`)
-  return manifestEntry('massing', 'massing/index.json', pkg, resource)
+  return [
+    manifestEntry('massing', 'massing/index.json', pkg, resource),
+    manifestEntry('addresses', 'massing/index.json', addressPoints.pkg, addressPoints.resource),
+  ]
+}
+
+/** Rank of an address point's class: structures before land, entrances last. */
+const ADDRESS_CLASS_RANK: Record<string, number> = { Structure: 0, Land: 1, 'Structure Entrance': 2, 'Land Entrance': 3 }
+
+/**
+ * City of Toronto Address Points (~525k civic addresses, lat/long), joined onto the
+ * massing buildings. The CSV is the smallest download (~175 MB); its geometry column
+ * is GeoJSON text.
+ */
+async function loadAddressPoints() {
+  console.log('\n▸ addresses (address-points-municipal-toronto-one-address-repository)')
+  const { pkg, resource, cached } = await fetchResource(
+    'address-points-municipal-toronto-one-address-repository',
+    (rs) => rs.find((r) => r.name === 'Address Points - 4326.csv'),
+    () => 'address-points.csv',
+  )
+  const rows = parseCsv(await readFile(cached, 'utf8'))
+  const header = rows.next().value as string[]
+  const col = (name: string) => {
+    const i = header.indexOf(name)
+    if (i < 0) throw new Error(`Address Points CSV has no ${name} column`)
+    return i
+  }
+  const [iAddr, iPlace, iWard, iClass, iGeom] = ['ADDRESS_FULL', 'PLACE_NAME', 'WARD_NAME', 'ADDRESS_CLASS_DESC', 'geometry'].map(col)
+  const clean = (v: string | undefined) => (v && v !== 'None' ? v : null)
+  const points: AddressPoint[] = []
+  for (const row of rows) {
+    const address = clean(row[iAddr])
+    if (!address || !row[iGeom]) continue
+    const geom = JSON.parse(row[iGeom]) as { type: string; coordinates: number[] | number[][] }
+    const coords = (geom.type === 'MultiPoint' ? (geom.coordinates as number[][]) : [geom.coordinates as number[]])[0]
+    if (!coords) continue
+    points.push({
+      lon: coords[0],
+      lat: coords[1],
+      address,
+      place: clean(row[iPlace]),
+      ward: clean(row[iWard]),
+      // Named places first, then structures before land.
+      rank: (clean(row[iPlace]) ? 0 : 10) + (ADDRESS_CLASS_RANK[row[iClass]] ?? 5),
+    })
+  }
+  return { pkg, resource, points }
 }
 
 /** Grows bbox to include every [lon, lat] in nested GeoJSON coordinates. */
@@ -274,7 +355,7 @@ async function main() {
 
   const datasets = []
   for (const ds of DATASETS) if (wanted(ds.id)) datasets.push(await processDataset(ds))
-  if (wanted('massing')) datasets.push(await processMassing())
+  if (wanted('massing')) datasets.push(...(await processMassing()))
 
   if (ONLY) {
     // Partial run: leave the full manifest from the last complete run alone.
