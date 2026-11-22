@@ -46,7 +46,8 @@ so it can later point at a backend instead.
 
 ## Search
 
-The search box (top-left, or press **/**) finds addresses, intersections, landmarks
+The search box lives in the Drone panel's **Plan a route** step (press **/** to focus it
+there). It finds addresses, intersections, landmarks
 and the City's 158 neighbourhoods:
 
 - Neighbourhoods and saved places match instantly as you type (local data).
@@ -54,8 +55,8 @@ and the City's 158 neighbourhoods:
   Google's terms when using its 3D Tiles), after a short pause or on Enter. Queries are
   pinned to Toronto; results far outside it are dropped, and ones outside the City
   boundary are tagged.
-- Results drop a pin (neighbourhoods are selected instead); the camera stays on the drone.
-  The Drone panel offers the last result as a **Fly to** destination.
+- A chosen result becomes the route's destination and drops a pin; the camera stays on
+  the drone.
 - Saved places live in [src/places/presets.ts](src/places/presets.ts). Most are
   defined by name/address and looked up once per browser; recent searches are remembered.
 
@@ -69,20 +70,21 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
 
 - **Before a flight** the panel shows the status, the geofence and two choices:
   - **Free fly**: takes off straight away (to 30 m) and goes to the controls.
-  - **Plan a route**: choose a destination (*Pick on map*, or your last search result),
+  - **Plan a route**: choose a destination (*Pick on map*, or search for a place),
     then set the **height** and **Take off**. The drone climbs to that height and flies
-    to the destination by itself. *Back* returns to the choice.
+    to the destination on autopilot: the panel shows its progress and a single
+    **Take over controls** button, which stops the autopilot (PX4 holds where it is) and
+    switches to the manual controls below. *Back* returns to the choice.
 
   After landing (or Reset after a crash) the panel returns to this choice. Refusals
   (e.g. pre-arm checks failing) show in the panel.
-- **In flight**: **Hold**, **Return** and **Land**, plus:
-  - **Keyboard flying**: **W/S** (or ↑/↓) forward/back, **A/D** slide, **←/→** (or Q/E)
-    turn, **Space/Shift** up/down. The bridge puts PX4 in offboard mode and streams the
-    velocity; letting go hovers, and after 3 s idle PX4 is handed back to Hold. Taking the
-    keys cancels a fly-to.
-  - **Fly to**: *Pick on map* (click a point; Esc cancels) or the last search result.
-    PX4 flies there at its current height; a cyan ring and dashed line mark the target
-    until it arrives. *Stop* holds position.
+- **In flight** (free fly, or after taking over): **Hold**, **Return** and **Land**, plus
+  **keyboard flying**: **W/S** (or ↑/↓) forward/back, **A/D** slide, **←/→** (or Q/E)
+  turn, **Space/Shift** up/down. The bridge puts PX4 in offboard mode and streams the
+  velocity; letting go hovers, and after 3 s idle PX4 is handed back to Hold.
+  **Plan a route** at the bottom opens the route planner in the air: choose a destination
+  and height, then **Fly there** hands over to the autopilot (it climbs or descends to
+  that height on the way). *Back* returns to the controls.
 - **Camera**: always a chase camera on the drone. It starts behind and above it and swings
   round to stay behind as it turns; **drag** to rotate around the drone, **scroll** to zoom
   (3 m to 30 km). Your angle and zoom are kept as it flies. There's no free camera or Home

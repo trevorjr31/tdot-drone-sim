@@ -6,7 +6,7 @@ import { LayerList } from './components/LayerList'
 import { SettingsMenu, SettingsSection } from './components/SettingsMenu'
 import { useDrone } from './drone/useDrone'
 import { SearchBox } from './components/SearchBox'
-import type { MapApi, Place } from './places/types'
+import type { MapApi } from './places/types'
 import { LAYERS, loadVisibility, saveVisibility, type LayerId, type LayerStatus, type LayerVisibility } from './layers/layerState'
 
 type LayerStatuses = Partial<Record<LayerId, { status: LayerStatus; message?: string }>>
@@ -17,25 +17,21 @@ function App() {
   const [layerStatus, setLayerStatus] = useState<LayerStatuses>({})
   const [mapApi, setMapApi] = useState<MapApi | null>(null)
 
-  // The last place chosen in search, offered to the drone as a fly-to destination.
-  const [searchedPlace, setSearchedPlace] = useState<Place | null>(null)
-  const drone = useDrone({ pickLocation: mapApi?.pickLocation, searchedPlace })
+  const drone = useDrone({ pickLocation: mapApi?.pickLocation })
 
-  // A searched place is marked on the map and offered to the drone as a fly-to destination.
+  // The search box lives in the drone card's Plan a route step: a chosen place is marked
+  // on the map and becomes the route's destination.
+  const { routeToPlace } = drone
   const searchApi = useMemo<MapApi | null>(
     () =>
       mapApi && {
         ...mapApi,
         showPlace: (place) => {
           mapApi.showPlace(place)
-          setSearchedPlace(place)
-        },
-        clearPin: () => {
-          mapApi.clearPin()
-          setSearchedPlace(null)
+          routeToPlace(place)
         },
       },
-    [mapApi],
+    [mapApi, routeToPlace],
   )
 
 
@@ -73,8 +69,7 @@ function App() {
         onDroneView={drone.setDroneView}
       />
       <aside className="sidebar">
-        <SearchBox api={searchApi} />
-        <DronePanel {...drone.panel} />
+        <DronePanel {...drone.panel} routeSearch={<SearchBox api={searchApi} />} />
       </aside>
       <SettingsMenu>
         <SettingsSection title="Layers">

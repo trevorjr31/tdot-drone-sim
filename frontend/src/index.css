@@ -890,3 +890,21 @@ body,
   color: #bdeefc;
   font-size: 13px;
 }
+
+.drone-panel__or {
+  color: var(--panel-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* The search box inside the drone card: flatter, no floating shadow. */
+.drone-panel .search__field {
+  background: rgba(0, 0, 0, 0.25);
+  box-shadow: none;
+}
+
+.btn--block {
+  width: 100%;
+  flex: none;
+  padding: 8px;
+}

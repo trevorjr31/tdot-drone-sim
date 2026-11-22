@@ -17,15 +17,13 @@ const ROUTE_CLIMB_TOLERANCE_M = 2
 type Options = {
   /** Map click picker (from the map API), for "pick on map" fly-to. */
   pickLocation?: MapApi['pickLocation']
-  /** The place last chosen in search, offered as a fly-to destination. */
-  searchedPlace?: Place | null
 }
 
 /**
  * All drone state for the UI: the PX4 connection (via the bridge), HUD data,
  * PX4 commands, keyboard flying, fly-to, collisions and crash/reset.
  */
-export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
+export function useDrone({ pickLocation }: Options = {}) {
   const [px4] = useState(() => new Px4BridgeSource())
   const [droneView, setDroneView] = useState<DroneView | null>(null)
   const [hud, setHud] = useState<HudInfo | null>(null)
@@ -39,6 +37,11 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
   const [crashed, setCrashed] = useState(false)
   const [mission, setMission] = useState<Mission>('choose')
   const [routeDest, setRouteDest] = useState<FlyToTarget | null>(null)
+  /** Planned route: climbing to its height before setting off for the destination. */
+  const [routeClimbing, setRouteClimbing] = useState(false)
+  /** The autopilot is flying a planned route (until landing or "Take over controls"). */
+  const [autopilot, setAutopilot] = useState(false)
+  const inAirRef = useRef(false)
   /** A planned route waiting for the takeoff to reach height before flying to its destination. */
   const pendingRoute = useRef<{ dest: FlyToTarget; altM: number } | null>(null)
   const startRouteLegRef = useRef<(dest: FlyToTarget) => void>(() => {})
@@ -49,10 +52,13 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     const offHud = droneView.onHud((h) => {
       setHud(h)
       const flying = !!h && (h.state.armed || h.state.inAir)
+      inAirRef.current = !!h?.state.inAir
       // Landed after a flight: back to the pre-flight choice.
       if (wasFlying && h && !flying) {
         setMission('choose')
         setRouteDest(null)
+        setRouteClimbing(false)
+        setAutopilot(false)
         pendingRoute.current = null
       }
       wasFlying = flying
@@ -60,6 +66,7 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
       const route = pendingRoute.current
       if (route && h?.state.inAir && h.state.relAltM >= route.altM - ROUTE_CLIMB_TOLERANCE_M) {
         pendingRoute.current = null
+        setRouteClimbing(false)
         startRouteLegRef.current(route.dest)
       }
     })
@@ -104,17 +111,17 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     [px4, droneView],
   )
 
-  // Fly-to: PX4 flies to the point at its current height.
+  // Fly-to: PX4 flies to the point, at its current height unless one is given.
   const flyTo = useCallback(
-    (lat: number, lon: number, label: string) => {
+    (lat: number, lon: number, label: string, relAltM?: number) => {
       droneView?.setTarget({ lat, lon, label })
-      void px4Command('goto', { lat, lon })
+      return px4Command('goto', { lat, lon, relAltM })
     },
     [droneView, px4Command],
   )
 
   useEffect(() => {
-    startRouteLegRef.current = (dest) => flyTo(dest.lat, dest.lon, dest.label)
+    startRouteLegRef.current = (dest) => void flyTo(dest.lat, dest.lon, dest.label)
   }, [flyTo])
 
   // --- pre-flight -----------------------------------------------------------
@@ -125,8 +132,9 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     if (!(await px4Command('takeoff', { altitudeM: FREE_FLY_ALT_M }))) setMission('choose')
   }, [px4Command])
 
+  /** Back out of Plan a route: to the pre-flight choice, or (in the air) to the manual controls. */
   const backToChoose = useCallback(() => {
-    setMission('choose')
+    setMission(inAirRef.current ? 'free' : 'choose')
     setRouteDest(null)
   }, [])
 
@@ -138,36 +146,47 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     if (point) setRouteDest({ lat: point.lat, lon: point.lon, label: 'Map point' })
   }, [pickLocation])
 
-  const routeToSearched = useCallback(() => {
-    if (!searchedPlace) return
-    const { lat, lon } = centreOf(searchedPlace.target)
-    setRouteDest({ lat, lon, label: searchedPlace.title })
-  }, [searchedPlace])
+  /** Plan a route: a place chosen in the route's search box becomes the destination. */
+  const routeToPlace = useCallback((place: Place) => {
+    const { lat, lon } = centreOf(place.target)
+    setRouteDest({ lat, lon, label: place.title })
+  }, [])
 
-  /** Planned route: take off to the chosen height, then fly to the destination. */
+  /**
+   * Planned route on autopilot. On the ground: take off to the chosen height, then fly to
+   * the destination. In the air: fly straight there, climbing or descending to that height.
+   */
   const startRoute = useCallback(
     async (altM: number) => {
       if (!routeDest) return
+      setAutopilot(true)
+      if (inAirRef.current) {
+        if (!(await flyTo(routeDest.lat, routeDest.lon, routeDest.label, altM))) setAutopilot(false)
+        return
+      }
       pendingRoute.current = { dest: routeDest, altM }
+      setRouteClimbing(true)
       if (await px4Command('takeoff', { altitudeM: altM })) droneView?.setTarget(routeDest)
-      else pendingRoute.current = null
+      else {
+        pendingRoute.current = null
+        setRouteClimbing(false)
+        setAutopilot(false)
+      }
     },
-    [routeDest, px4Command, droneView],
+    [routeDest, px4Command, droneView, flyTo],
   )
 
-  const pickAndFly = useCallback(async () => {
-    if (!pickLocation) return
-    setPicking(true)
-    const point = await pickLocation()
-    setPicking(false)
-    if (point) flyTo(point.lat, point.lon, 'map point')
-  }, [pickLocation, flyTo])
+  /** Leave the autopilot: the drone holds where it is and the manual controls take over. */
+  const takeOver = useCallback(() => {
+    pendingRoute.current = null
+    setRouteClimbing(false)
+    setAutopilot(false)
+    setMission('free')
+    droneView?.setTarget(null)
+    void px4Command('hold')
+  }, [droneView, px4Command])
 
-  const flyToSearched = useCallback(() => {
-    if (!searchedPlace) return
-    const { lat, lon } = centreOf(searchedPlace.target)
-    flyTo(lat, lon, searchedPlace.title)
-  }, [searchedPlace, flyTo])
+
 
   // Keyboard flying, enabled while PX4 is connected and the drone is airborne.
   const droneViewRef = useRef(droneView)
@@ -190,7 +209,8 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
       keyboardRef.current = null
     }
   }, [px4])
-  const canFly = px4Status === 'connected' && !crashed && (hud?.state.inAir ?? false)
+  // No keyboard while the autopilot flies a planned route (until "Take over controls").
+  const canFly = px4Status === 'connected' && !crashed && !autopilot && (hud?.state.inAir ?? false)
   useEffect(() => keyboardRef.current?.setEnabled(canFly), [canFly])
 
   // Building collisions: PX4 doesn't know about buildings, so the app decides it crashed.
@@ -214,6 +234,8 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
     setCrashed(false)
     setMission('choose')
     setRouteDest(null)
+    setRouteClimbing(false)
+    setAutopilot(false)
   }, [px4Command, droneView])
 
   return {
@@ -238,7 +260,6 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
         keysActive,
         target,
         picking,
-        searchedPlaceTitle: searchedPlace?.title ?? null,
         geofence: px4.geofence,
         mission,
         onFreeFly: () => void freeFly(),
@@ -246,15 +267,19 @@ export function useDrone({ pickLocation, searchedPlace = null }: Options = {}) {
         onBack: backToChoose,
         routeDest,
         onPickRouteDest: () => void pickRouteDest(),
-        onRouteToSearched: routeToSearched,
+        onClearRouteDest: () => setRouteDest(null),
         onStartRoute: (altM: number) => void startRoute(altM),
-        onPickAndFly: () => void pickAndFly(),
-        onFlyToSearched: flyToSearched,
+        routeClimbing,
+        autopilot,
+        onTakeOver: takeOver,
       },
       inAir: hud?.state.inAir ?? false,
       armed: hud?.state.armed ?? false,
+      relAltM: hud?.state.relAltM ?? null,
     },
     trailVisible,
     setTrailVisible,
+    /** For the route planner's search box. */
+    routeToPlace,
   }
 }
