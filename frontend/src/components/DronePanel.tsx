@@ -73,7 +73,9 @@ export function DronePanel(props: Props) {
 
   let body
   if (props.crashed) body = <CrashBox resetting={p.busy === 'reset'} error={p.error} onReset={props.onReset} />
-  else if (flying && p.autopilot) body = <Autopilot {...p} />
+  // Free fly / autopilot chosen: stay on that screen from the moment take-off is sent,
+  // not only once telemetry reports the drone armed (that lags PX4's answer by a second or two).
+  else if (p.autopilot) body = <Autopilot {...p} />
   else if (p.mission === 'route')
     body = (
       <RoutePlanner
@@ -84,7 +86,7 @@ export function DronePanel(props: Props) {
         initialAltM={props.inAir && props.relAltM !== null ? props.relAltM : 30}
       />
     )
-  else if (flying) body = <FlightControls {...p} />
+  else if (flying || p.mission === 'free') body = <FlightControls {...p} />
   else body = <ChooseMission {...p} ready={ready} />
 
   return (
