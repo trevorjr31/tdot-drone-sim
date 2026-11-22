@@ -29,7 +29,7 @@
     "typescript": "~7.0.2",
     "vite": "^8.3.6",
     "vite-plugin-static-copy": "^3.4.0",
-    "vitest": "^4.1.12"
+    "vitest": "^5.1.1"
   },
   "engines": {
     "node": ">=20.19"
