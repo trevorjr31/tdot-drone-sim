@@ -942,3 +942,53 @@ body,
   flex: none;
   padding: 8px;
 }
+
+/* Route safety / landing warnings in the drone card. */
+.drone-panel__check {
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  border: 1px solid transparent;
+}
+.drone-panel__check.is-ok {
+  background: rgba(76, 175, 80, 0.12);
+  border-color: rgba(76, 175, 80, 0.35);
+}
+.drone-panel__check.is-warn {
+  background: rgba(255, 193, 7, 0.12);
+  border-color: rgba(255, 193, 7, 0.4);
+}
+.drone-panel__check.is-bad {
+  background: rgba(244, 67, 54, 0.14);
+  border-color: rgba(244, 67, 54, 0.45);
+}
+.drone-panel__check > span {
+  display: block;
+}
+.drone-panel__check .btn--small,
+.drone-panel__check .drone-panel__buttons {
+  margin-top: 6px;
+}
+
+/* Read-only facts in the settings menu (e.g. the geofence). */
+.settings__facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  margin: 2px 0 4px;
+  padding: 2px 12px;
+  font-size: 12px;
+}
+.settings__facts dt {
+  color: var(--panel-muted);
+}
+.settings__facts dd {
+  margin: 0;
+}
+.settings__fact.is-ok {
+  color: #52c77a;
+}
+.settings__fact.is-bad {
+  color: #e63946;
+}

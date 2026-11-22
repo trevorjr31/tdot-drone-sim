@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { loadMassingIndex, loadMassingTile } from '../data/torontoData'
-import { BuildingCollider, findImpact } from './collision'
+import { BuildingCollider, buildingName, findImpact } from './collision'
 import type { CrashSite } from './crash'
 import type { DroneSource, DroneState } from './types'
 
@@ -15,6 +15,8 @@ export type CollisionInfo = {
   warning: boolean
   /** Roof height of the building last hit, metres above sea level. */
   lastHitRoofM: number | null
+  /** The building directly below the drone (tallest, if footprints overlap); null over open ground. */
+  below: { name: string | null; heightM: number } | null
 }
 
 const UI_UPDATE_MS = 200
@@ -40,6 +42,7 @@ export function useCollisions(source: DroneSource, onHit: (site: CrashSite) => v
     colliding: false,
     warning: false,
     lastHitRoofM: null,
+    below: null,
   })
   const colliderRef = useRef<BuildingCollider | null>(null)
   const onHitRef = useRef(onHit)
@@ -101,7 +104,17 @@ export function useCollisions(source: DroneSource, onHit: (site: CrashSite) => v
         if (!hit && colliding) {
           lingerTimer = window.setTimeout(() => setInfo((i) => (i.colliding ? i : { ...i, warning: false })), WARNING_LINGER_MS)
         }
-        setInfo((i) => ({ ...i, colliding: hit, nearestM: r.nearest?.distanceM ?? null }))
+        const under = collider.footprintsAt(s.lon, s.lat).reduce<ReturnType<typeof collider.footprintsAt>[number] | null>(
+          (best, b) => (!best || b.roofM > best.roofM ? b : best),
+          null,
+        )
+        const below = under ? { name: buildingName(under), heightM: Math.round(under.roofM - under.groundM) } : null
+        setInfo((i) => ({
+          ...i,
+          colliding: hit,
+          nearestM: r.nearest?.distanceM ?? null,
+          below: i.below?.name === below?.name && i.below?.heightM === below?.heightM ? i.below : below,
+        }))
         lastUi = now
       }
       colliding = hit

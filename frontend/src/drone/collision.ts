@@ -72,6 +72,11 @@ export function buildingsFromTile(fc: FeatureCollection<MassingProps>, wards: st
   return out
 }
 
+/** A building's place name or first address, if the City data has one. */
+export function buildingName(b: Building): string | null {
+  return b.address?.place ?? b.address?.addresses[0] ?? null
+}
+
 /** Inside the outer ring and not in a courtyard (hole). */
 export function footprintContains(b: Pick<Building, 'bbox' | 'outer' | 'holes'>, lon: number, lat: number): boolean {
   const [w, s, e, n] = b.bbox

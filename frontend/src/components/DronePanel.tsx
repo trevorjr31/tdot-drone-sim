@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
-import type { Mission } from '../drone/useDrone'
+import { crossingAltM, ROUTE_MAX_ALT_M, routeProblem, type Mission, type RouteCheckInfo, type RoutePhase } from '../drone/useDrone'
 
 type Props = {
   /** Search box shown in Plan a route, under Pick on map (picking a result sets the destination). */
@@ -30,8 +30,16 @@ type Props = {
     onPickRouteDest: () => void
     onClearRouteDest: () => void
     onStartRoute: (altM: number) => void
-    /** Planned route: still climbing to height before setting off. */
-    routeClimbing: boolean
+    /** Where the autopilot is in a planned route. */
+    routePhase: RoutePhase | null
+    /** Height the route is flown at, above home. */
+    routeAltM: number | null
+    /** Height the route crosses at, to clear the buildings on the way. */
+    routeCrossM: number | null
+    /** Buildings between the drone and the destination (while planning). */
+    routeCheck: RouteCheckInfo | null
+    /** The building directly below the drone, if any (for the landing warning). */
+    overBuilding: { name: string | null; heightM: number } | null
     /** The autopilot is flying a planned route. */
     autopilot: boolean
     onTakeOver: () => void
@@ -84,6 +92,7 @@ export function DronePanel(props: Props) {
         search={props.routeSearch}
         airborne={props.inAir}
         initialAltM={props.inAir && props.relAltM !== null ? props.relAltM : 30}
+        currentAltM={props.inAir ? props.relAltM : null}
       />
     )
   else if (flying || p.mission === 'free') body = <FlightControls {...p} />
@@ -91,8 +100,18 @@ export function DronePanel(props: Props) {
 
   return (
     <section className={`layer-panel drone-panel${open ? '' : ' is-collapsed'}`} aria-label="Drone">
-      <button type="button" className="layer-panel__header" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <span>Drone</span>
+      <button
+        type="button"
+        className="layer-panel__header"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-label={`Drone: ${STATUS_TEXT[p.status]}. ${open ? 'Hide' : 'Show'} the drone controls`}
+      >
+        <span className={`drone-panel__status is-${p.status}`}>
+          <span className="drone-panel__dot" aria-hidden />
+          {STATUS_TEXT[p.status]}
+          {ready && p.version ? ` · PX4 ${p.version}` : ''}
+        </span>
         <span className="layer-panel__chevron" aria-hidden>
           {open ? '▾' : '▸'}
         </span>
@@ -116,16 +135,10 @@ export function DronePanel(props: Props) {
 function Status(p: Props['px4'] & { ready: boolean }) {
   return (
     <>
-      <div className={`drone-panel__status is-${p.status}`}>
-        <span className="drone-panel__dot" aria-hidden />
-        {STATUS_TEXT[p.status]}
-        {p.ready && p.version ? ` · PX4 ${p.version}` : ''}
-      </div>
-      {p.ready && p.geofence && (
-        <div className={`drone-panel__fence${p.geofence.uploaded ? '' : ' is-missing'}`} title={p.geofence.error ?? undefined}>
-          {p.geofence.uploaded
-            ? `Geofence: City of Toronto boundary · ${p.geofence.ceilingM.toFixed(0)} m ceiling · breach returns home`
-            : `No geofence: ${p.geofence.error ?? 'not uploaded'}`}
+      {/* The geofence details are in Settings; only a missing fence is worth flagging here. */}
+      {p.ready && p.geofence && !p.geofence.uploaded && (
+        <div className="drone-panel__fence is-missing" title={p.geofence.error ?? undefined}>
+          No geofence: {p.geofence.error ?? 'not uploaded'}
         </div>
       )}
       {p.status === 'bridge-offline' && (
@@ -157,7 +170,9 @@ function ChooseMission(p: Props['px4'] & { ready: boolean }) {
  * Plan a route: destination first, then height and Take off. Also opened in the air from
  * the manual controls, where the button is Fly there and Back returns to the controls.
  */
-function RoutePlanner(p: Props['px4'] & { ready: boolean; search: ReactNode; airborne: boolean; initialAltM: number }) {
+function RoutePlanner(
+  p: Props['px4'] & { ready: boolean; search: ReactNode; airborne: boolean; initialAltM: number; currentAltM: number | null },
+) {
   const [altM, setAltM] = useState(() => Math.max(5, Math.min(120, Math.round(p.initialAltM))))
   return (
     <>
@@ -205,10 +220,11 @@ function RoutePlanner(p: Props['px4'] & { ready: boolean; search: ReactNode; air
             />
             m above {p.airborne ? 'home' : 'the launch point'}
           </label>
+          <RouteCheck check={p.routeCheck} altM={altM} currentAltM={p.currentAltM} onUse={setAltM} />
           <button
             type="button"
             className="btn btn--primary btn--block"
-            disabled={!p.ready || p.busy !== null}
+            disabled={!p.ready || p.busy !== null || routeBlocked(p.routeCheck, altM)}
             onClick={() => p.onStartRoute(altM)}
           >
             {p.airborne ? 'Fly there' : p.busy === 'takeoff' ? 'Taking off…' : 'Take off'}
@@ -222,6 +238,9 @@ function RoutePlanner(p: Props['px4'] & { ready: boolean; search: ReactNode; air
 /** Manual flight (free fly, or after taking over from the autopilot): stop/return/land and keyboard. */
 function FlightControls(p: Props['px4']) {
   const busy = p.busy !== null
+  const [confirmLand, setConfirmLand] = useState(false)
+  const below = confirmLand ? p.overBuilding : null
+  const land = () => (p.overBuilding ? setConfirmLand(true) : p.onCommand('land'))
   return (
     <>
       <div className="drone-panel__buttons">
@@ -231,10 +250,30 @@ function FlightControls(p: Props['px4']) {
         <button type="button" className="btn" disabled={busy || !p.canFly} onClick={() => p.onCommand('rtl')}>
           Return
         </button>
-        <button type="button" className="btn" disabled={busy || !p.canFly} onClick={() => p.onCommand('land')}>
+        <button type="button" className="btn" disabled={busy || !p.canFly} onClick={land}>
           Land
         </button>
       </div>
+
+      {below && (
+        <div className="drone-panel__check is-bad" role="alert">
+          <span>
+            Over <strong>{below.name ?? 'a building'}</strong> ({below.heightM} m tall). PX4 lands straight down and
+            doesn't know the building is there, so the drone would crash onto the roof.
+          </span>
+          <div className="drone-panel__buttons">
+            <button type="button" className="btn" onClick={() => (setConfirmLand(false), p.onCommand('rtl'))}>
+              Return home
+            </button>
+            <button type="button" className="btn" onClick={() => (setConfirmLand(false), p.onCommand('land'))}>
+              Land anyway
+            </button>
+            <button type="button" className="btn" onClick={() => setConfirmLand(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {(p.busy === 'takeoff' || !p.canFly) && (
         <div className="drone-panel__hint">Taking off… the controls unlock once airborne.</div>
@@ -276,20 +315,19 @@ function FlightControls(p: Props['px4']) {
 
 /** Planned route in flight: the autopilot flies; the only option is to take over. */
 function Autopilot(p: Props['px4']) {
-  const dest = p.routeDest?.label ?? 'the destination'
-  const status = p.routeClimbing ? (
-    <>
-      Climbing, then flying to <strong>{dest}</strong>…
-    </>
-  ) : p.target ? (
-    <>
-      Flying to <strong>{dest}</strong>…
-    </>
-  ) : (
-    <>
-      Arrived at <strong>{dest}</strong>
-    </>
-  )
+  const dest = <strong>{p.routeDest?.label ?? 'the destination'}</strong>
+  const alt = p.routeAltM !== null ? `${p.routeAltM} m` : 'height'
+  const cross = p.routeCrossM !== null ? `${p.routeCrossM} m` : alt
+  const status =
+    p.routePhase === 'climbing' ? (
+      <>Climbing to {cross}, then flying to {dest}…</>
+    ) : p.routePhase === 'flying' ? (
+      <>Flying to {dest}…</>
+    ) : p.routePhase === 'descending' ? (
+      <>Descending to {alt} over {dest}…</>
+    ) : (
+      <>Arrived at {dest}</>
+    )
   return (
     <>
       <div className="drone-panel__label">Autopilot</div>
@@ -301,6 +339,67 @@ function Autopilot(p: Props['px4']) {
       </button>
       <div className="drone-panel__hint">Stops the autopilot (the drone holds where it is) and gives you the controls.</div>
     </>
+  )
+}
+
+/** Whether the route's height is unsafe (or still being checked). */
+function routeBlocked(c: RouteCheckInfo | null, altM: number): boolean {
+  if (c?.status === 'checking') return true
+  return c?.status === 'done' && routeProblem(c, altM) !== null
+}
+
+/** The buildings along the route vs the chosen height. */
+function RouteCheck({
+  check: c,
+  altM,
+  currentAltM,
+  onUse,
+}: {
+  check: RouteCheckInfo | null
+  altM: number
+  currentAltM: number | null
+  onUse: (m: number) => void
+}) {
+  if (!c) return null
+  if (c.status === 'checking') return <div className="drone-panel__hint">Checking the buildings along the route…</div>
+  if (c.status === 'error')
+    return <div className="drone-panel__check is-warn">Couldn't check the buildings on the route. Fly high to be safe.</div>
+  if (!c.highest) return <div className="drone-panel__check is-ok">No buildings on the way.</div>
+  const name = (b: { name: string | null; heightM: number }) => (
+    <>
+      <strong>{b.name ?? 'a building'}</strong>, {b.heightM} m tall
+    </>
+  )
+  const what = name(c.highest)
+  const problem = routeProblem(c, altM)
+  if (problem?.kind === 'ceiling')
+    return (
+      <div className="drone-panel__check is-bad">
+        The route passes {what}: too tall to clear under the {ROUTE_MAX_ALT_M} m ceiling. Choose another destination.
+      </div>
+    )
+  if (problem)
+    return (
+      <div className="drone-panel__check is-bad">
+        <span>
+          Too low for the destination: {name(c.destHighest!)} is there. End at {problem.needM} m or higher.
+        </span>
+        <button type="button" className="btn btn--small" onClick={() => onUse(problem.needM)}>
+          Use {problem.needM} m
+        </button>
+      </div>
+    )
+  const cross = Math.round(crossingAltM(altM, currentAltM, c.minSafeRelAltM))
+  if (cross > altM + 2)
+    return (
+      <div className="drone-panel__check is-ok">
+        Crosses at {cross} m to clear {what}, then descends to {altM} m over the destination.
+      </div>
+    )
+  return (
+    <div className="drone-panel__check is-ok">
+      Clears the tallest building on the way: {what} (needs {c.minSafeRelAltM} m).
+    </div>
   )
 }
 

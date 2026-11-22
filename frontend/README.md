@@ -73,13 +73,20 @@ can start before or after it; the **Drone** panel shows the connection status. O
 the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
 [`DroneState`](src/drone/types.ts).
 
-- **Before a flight** the panel shows the status, the geofence and two choices:
+- **Before a flight** the panel shows two choices (the connection status is always visible
+  in its header, even when collapsed):
   - **Free fly**: takes off straight away (to 30 m) and goes to the controls.
   - **Plan a route**: choose a destination (*Pick on map*, or search for a place),
-    then set the **height** and **Take off**. The drone climbs to that height and flies
-    to the destination on autopilot: the panel shows its progress and a single
-    **Take over controls** button, which stops the autopilot (PX4 holds where it is) and
-    switches to the manual controls below. *Back* returns to the choice.
+    then set the **height** to arrive at and **Take off**. The drone flies there on
+    autopilot: the panel shows its progress and a single **Take over controls** button,
+    which stops the autopilot (PX4 holds where it is) and switches to the manual controls
+    below. *Back* returns to the choice.
+  - **Route safety**: PX4 doesn't know about buildings, so the app checks the straight line
+    to the destination against the City massing (a 15 m strip either side) and the panel
+    names the tallest building on the way. The autopilot picks a crossing height 10 m
+    above it (or your height, if higher), climbs to it straight up, crosses, then descends
+    to your height over the destination. Take off is refused if the route needs more than
+    the 120 m ceiling, or if your height is too low for the destination itself.
 
   After landing (or Reset after a crash) the panel returns to this choice. Refusals
   (e.g. pre-arm checks failing) show in the panel.
@@ -88,15 +95,20 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   turn, **Space/Shift** up/down. The bridge puts PX4 in offboard mode and streams the
   velocity; letting go hovers, and after 3 s idle PX4 is handed back to Hold.
   **Plan a route** at the bottom opens the route planner in the air: choose a destination
-  and height, then **Fly there** hands over to the autopilot (it climbs or descends to
-  that height on the way). *Back* returns to the controls.
+  and height, then **Fly there** hands over to the autopilot (same route safety; from the
+  air it never descends before arriving). *Back* returns to the controls.
+  **Land** over a building asks first: PX4 lands straight down and doesn't know the
+  building is there, so the drone would crash onto the roof. *Return home* is offered
+  instead.
 - **Camera**: always a chase camera on the drone. It starts behind and above it and swings
   round to stay behind as it turns; **drag** to rotate around the drone, **scroll** to zoom
   (3 m to 30 km), straight through any building in the way. Your angle and zoom are kept as it flies. There's no free camera or Home
   button for now.
 - **HUD** (bottom-right): height above whatever is below (ground or roof), altitude above
   sea level, speed, climb, heading, distance from home, battery, flight mode, armed state,
-  and a warning above Transport Canada's 122 m (400 ft) limit.
+  and a warning above Transport Canada's 122 m (400 ft) limit. **Settings → Flight
+  readouts** hides it (remembered in this browser); crash, collision and height-limit
+  warnings still appear.
 - The model is drawn 4× real size so it's visible from the chase camera; a red dot marks
   it from far away, a dashed line drops to the ground, and a yellow trail shows the path.
 - **Building collisions**: every state is checked against City massing footprints near the
@@ -112,7 +124,9 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   difference between City footprints and Google's 3D buildings. The HUD's **Building**
   readout gives the distance to the nearest building at the drone's height (amber under
   15 m, red under 5 m). PX4's own physics still doesn't know about buildings.
-- The panel shows the geofence status (see the top-level README).
+- **Settings → Geofence** shows the fence PX4 enforces (read only): status, area (City of
+  Toronto boundary), ceiling and breach action (see the top-level README). The panel only
+  mentions it if the upload failed.
 
 In dev builds `window.viewer` and `window.tdot` (`{ px4, droneView }`) are available in
 the browser console for debugging.
@@ -124,8 +138,9 @@ building for details: the card opens folded to just its title (the name or addre
 the ▸ button, or a click on the title, shows the details.
 
 The map is always the photorealistic 3D city. **Settings** (the gear, top-right) has the **Layers** toggles for
-the two overlays, **N** neighbourhoods and **B** city boundary; your choices are
-remembered in this browser. The City 3D Massing data is never drawn: it runs in the
+the two overlays, **N** neighbourhoods and **B** city boundary (remembered in this
+browser), the **Drone** options (flight readouts, flight trail) and the **Geofence**
+details. The City 3D Massing data is never drawn: it runs in the
 background for building collisions, the HUD's building distance, and click info.
 
 Clicking works at any zoom: on a building you get its name (or address) as the title,
