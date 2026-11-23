@@ -37,10 +37,13 @@ is open it sends "returnAlt" with a height that clears the buildings between the
 and home (it has the City building data). Unlike other commands, "returnAlt" doesn't
 interrupt keyboard flying.
 
-Battery: PX4's simulated battery drains steadily while armed and refills on disarm. By
-default it stops at 50%, so the bridge sets a full drain over BATTERY_FLIGHT_MIN minutes
-down to 0%, and PX4's low-battery responses: a warning at 25%, Return at 15%, and
-landing where it is at 5% (BATTERY_*_THR; the app's warnings use the same levels).
+Battery: PX4's simulated battery drains at a set rate while armed (SIM_BAT_DRAIN, the
+seconds from full to empty) and refills on disarm. By default it stops at 50%, so the
+bridge lets it run down to 0% and sets PX4's low-battery responses: a warning at 25%,
+Return at 15%, and landing where it is at 5% (BATTERY_*_THR; the app's warnings use the
+same levels). PX4's simulation knows nothing about load, so the bridge updates the drain
+rate about once a second from what the drone is doing (drain_factor): BATTERY_FLIGHT_MIN
+minutes of hovering, less idling on the ground or descending, more climbing or flying fast.
 """
 
 import asyncio
@@ -80,8 +83,11 @@ PX4_MAX_FENCE_POINTS = 63  # PX4 dataman holds 64 fence entries (one is bookkeep
 RETURN_ALT_MAX_M = FENCE_CEILING_M - 5
 RETURN_ALT_MIN_M = 20.0
 RETURN_ALT_DEFAULT_M = RETURN_ALT_MAX_M  # until the app sends a building-aware height
-# Simulated battery: minutes from full to empty while armed (PX4's default stops at 50%).
+# Simulated battery: minutes of hovering from full to empty (PX4's default stops at 50%).
 BATTERY_FLIGHT_MIN = float(os.environ.get("BATTERY_FLIGHT_MIN", "20"))
+# How often the drain rate follows the load, and how much it must change to be re-sent.
+BATTERY_LOAD_INTERVAL_S = 1.0
+BATTERY_LOAD_MIN_CHANGE = 0.03
 # PX4's responses (frontend: BATTERY_* in src/drone/battery.ts): warn, Return home, land where it is.
 BATTERY_LOW_THR = 0.25
 BATTERY_CRIT_THR = 0.15
@@ -120,6 +126,21 @@ FLIGHT_MODE_LABELS = {
 }
 
 
+def drain_factor(in_air: bool, climb_ms: float, speed_ms: float) -> float:
+    """
+    Battery drain relative to hovering (1.0), roughly like a small quadcopter: idling on
+    the ground draws little; climbing costs up to twice as much (at 4 m/s); descending a
+    bit less; forward flight is slightly cheaper up to ~8 m/s (the rotors get extra lift
+    from moving air), then drag makes it dearer.
+    """
+    if not in_air:
+        return 0.3
+    f = 1.0
+    f += 0.25 * min(climb_ms, 4.0) if climb_ms > 0 else -0.08 * min(-climb_ms, 3.0)
+    f += -0.1 * speed_ms / 8 if speed_ms <= 8 else -0.1 + 0.04 * (speed_ms - 8)
+    return max(0.3, min(2.5, f))
+
+
 class Bridge:
     def __init__(self) -> None:
         self.drone = System()
@@ -133,6 +154,9 @@ class Bridge:
         self.offboard_starting = False
         self.velocity = (0.0, 0.0, 0.0, 0.0)
         self.velocity_at = 0.0
+        # Battery drain vs load (see drain_factor): smoothed factor and the last one sent to PX4.
+        self.drain_load = 1.0
+        self.drain_sent: float | None = None
         self.offboard_started_at = 0.0
         # PX4 left offboard on its own (geofence, failsafe, …). Restarting offboard while keys are
         # still held would count as a pilot takeover and cancel PX4's failsafe, so wait for a release.
@@ -165,6 +189,7 @@ class Bridge:
         await self.drone.connect(system_address=MAVLINK_URL)
         asyncio.create_task(self.watch_connection())
         asyncio.create_task(self.watch_liveness())
+        asyncio.create_task(self.follow_battery_load())
         for name, stream in [
             ("position", self.watch_position),
             ("attitude", self.watch_attitude),
@@ -269,6 +294,7 @@ class Bridge:
         """A simulated battery that runs out, and PX4's responses with time to get home."""
         p = self.drone.param
         try:
+            self.drain_sent = None
             await p.set_param_float("SIM_BAT_DRAIN", BATTERY_FLIGHT_MIN * 60)
             await p.set_param_float("SIM_BAT_MIN_PCT", 0.0)
             await p.set_param_float("BAT_LOW_THR", BATTERY_LOW_THR)
@@ -276,11 +302,31 @@ class Bridge:
             await p.set_param_float("BAT_EMERGEN_THR", BATTERY_EMERGENCY_THR)
             await p.set_param_int("COM_LOW_BAT_ACT", LOW_BATTERY_ACTION_RETURN_THEN_LAND)
             log.info(
-                "Battery: %.0f min flight; warn %.0f%%, Return %.0f%%, land %.0f%%",
+                "Battery: %.0f min hover, drain follows load; warn %.0f%%, Return %.0f%%, land %.0f%%",
                 BATTERY_FLIGHT_MIN, BATTERY_LOW_THR * 100, BATTERY_CRIT_THR * 100, BATTERY_EMERGENCY_THR * 100,
             )
         except Exception as e:  # noqa: BLE001
             log.warning("Could not set up the battery: %s", e)
+
+    async def follow_battery_load(self) -> None:
+        """Keeps PX4's simulated drain rate in line with the load (see drain_factor)."""
+        while True:
+            await asyncio.sleep(BATTERY_LOAD_INTERVAL_S)
+            s = self.s
+            if not (self.px4_connected and s["armed"]):
+                self.drain_load = 1.0
+                continue
+            target = drain_factor(s["inAir"], s["climbRateMs"], s["groundSpeedMs"])
+            self.drain_load += 0.4 * (target - self.drain_load)  # smooth over a few seconds
+            sent = self.drain_sent
+            if sent is not None and abs(self.drain_load - sent) / sent < BATTERY_LOAD_MIN_CHANGE:
+                continue
+            try:
+                await self.drone.param.set_param_float("SIM_BAT_DRAIN", BATTERY_FLIGHT_MIN * 60 / self.drain_load)
+                self.drain_sent = self.drain_load
+                log.debug("Battery drain ×%.2f", self.drain_load)
+            except Exception as e:  # noqa: BLE001 - e.g. PX4 restarting
+                log.debug("Could not set the battery drain: %s", e)
 
     async def set_return_alt(self, rel_alt_m: float) -> None:
         alt = round(max(RETURN_ALT_MIN_M, min(RETURN_ALT_MAX_M, rel_alt_m)), 1)

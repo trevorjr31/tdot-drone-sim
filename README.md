@@ -86,15 +86,19 @@ count as a pilot takeover and cancel PX4's failsafe.
 
 ### Battery
 
-PX4's simulated battery drains steadily while armed and refills when the drone disarms.
-Out of the box it stops at 50%, so it never runs out; the bridge sets it to last 20 minutes
-from full to empty (`BATTERY_FLIGHT_MIN` in `docker-compose.yml`) and sets PX4's responses
-with time to act on them: a warning at 25%, **Return home** at 15%, and **landing where it
+PX4's simulated battery drains while armed and refills when the drone disarms. Out of the
+box it stops at 50%, so it never runs out, and it drains at one fixed rate whatever the
+drone is doing. The bridge lets it run down to 0% and, about once a second, sets the drain
+rate from the load: 20 minutes of hovering from full to empty (`BATTERY_FLIGHT_MIN`), about
+a third of that rate idling armed on the ground, up to twice it climbing (at 4 m/s), a bit
+less descending or cruising at ~8 m/s, and more again flying faster. It also sets PX4's
+responses with time to act on them: a warning at 25%, **Return home** at 15%, and **landing where it
 is** at 5% (over a building that means onto the roof, which the app counts as a crash).
 PX4 does all of this itself, app or no app. The app shows the minutes left in the HUD
 (estimated from how fast the battery is dropping) and warns in the drone panel at each
-level. To try it quickly: `docker exec tdot-px4 /px4/bin/px4-param set SIM_BAT_DRAIN 90`
-(seconds from full to empty) mid-flight; Reset or reconnecting restores the bridge's value.
+level. To try it quickly, give it a 2-minute battery:
+`BATTERY_FLIGHT_MIN=2 docker compose up -d --force-recreate bridge px4` (and the same
+without the variable to put it back).
 
 ### Smoke tests
 
