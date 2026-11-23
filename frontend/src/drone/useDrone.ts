@@ -51,6 +51,20 @@ export function crossingAltM(altM: number, currentAltM: number | null, minSafeRe
 
 /** Highest a route may fly: PX4's geofence ceiling (the bridge clamps heights to this too). */
 export const ROUTE_MAX_ALT_M = 120
+/** Highest Return home may fly: under the geofence ceiling, or the return itself breaches it (bridge: RETURN_ALT_MAX_M). */
+export const RETURN_MAX_ALT_M = 115
+/** Lowest return height the app sets (bridge: RETURN_ALT_MIN_M). */
+export const RETURN_MIN_ALT_M = 20
+
+/** Return home's height, kept clear of the buildings between the drone and home. */
+export type ReturnPlan = {
+  /** Height PX4 returns at, metres above home. */
+  altM: number
+  /** Tallest building on the straight line home, if any. */
+  highest: { name: string | null; heightM: number } | null
+  /** False when that building is too tall to clear under the ceiling. */
+  safe: boolean
+}
 
 /** Pre-flight choice: free flying with the keyboard, or a planned route to a destination. */
 export type Mission = 'choose' | 'free' | 'route'
@@ -85,6 +99,11 @@ export function useDrone({ pickLocation }: Options = {}) {
   const [routeDest, setRouteDest] = useState<FlyToTarget | null>(null)
   /** Planned route on autopilot: climbing, flying, descending or arrived. */
   const [routePhase, setRoutePhase] = useState<RoutePhase | null>(null)
+  /** routePhase for event handlers (the target listener must know if the route is in its flying leg). */
+  const routePhaseRef = useRef<RoutePhase | null>(null)
+  useEffect(() => {
+    routePhaseRef.current = routePhase
+  }, [routePhase])
   const [routeAltM, setRouteAltM] = useState<number | null>(null)
   /** Height the route crosses at (may be above routeAltM, to clear buildings). */
   const [routeCrossM, setRouteCrossM] = useState<number | null>(null)
@@ -139,13 +158,14 @@ export function useDrone({ pickLocation }: Options = {}) {
     })
     const offTarget = droneView.onTargetChange((t) => {
       setTarget(t)
-      if (t) return
-      // Reached the destination (fly-to targets clear themselves on arrival).
+      // Reached the destination: fly-to targets clear themselves on arrival. Only during the
+      // flying leg: other commands (e.g. the take-off) clear the target too.
+      if (t || routePhaseRef.current !== 'flying') return
       const descent = pendingDescent.current
       if (descent) {
         pendingDescent.current = null
         startDescentRef.current(descent)
-      } else setRoutePhase((p) => (p === 'flying' ? 'arrived' : p))
+      } else setRoutePhase('arrived')
     })
     return () => {
       offHud()
@@ -232,6 +252,39 @@ export function useDrone({ pickLocation }: Options = {}) {
       cancelled = true
     }
   }, [checkKey, routeSafety, routeDest])
+  // Return home: PX4 climbs to its return height and flies straight home, not knowing about
+  // buildings. Keep that height clear of the buildings between the drone and home, rechecked
+  // every ~10 m the drone moves (left alone during a return, which has already started).
+  const [returnPlan, setReturnPlan] = useState<ReturnPlan | null>(null)
+  const returnSending = useRef(false)
+  const returnKey =
+    px4Status === 'connected' && hud && !crashed && hud.state.flightMode !== 'Return'
+      ? `${hud.state.lat.toFixed(4)},${hud.state.lon.toFixed(4)}|${hud.state.home.lat.toFixed(5)},${hud.state.home.lon.toFixed(5)}`
+      : null
+  useEffect(() => {
+    const s = stateRef.current
+    if (!returnKey || !routeSafety || !s) return
+    let cancelled = false
+    routeSafety
+      .check({ lat: s.lat, lon: s.lon }, s.home, s.home.altAmslM)
+      .then((r) => {
+        if (cancelled) return
+        const altM = Math.max(RETURN_MIN_ALT_M, Math.min(RETURN_MAX_ALT_M, r.minSafeRelAltM))
+        setReturnPlan({ altM, highest: describe(r.highest), safe: r.minSafeRelAltM <= RETURN_MAX_ALT_M })
+        // Tell PX4 when it changed (the bridge reports what's set, so a PX4 restart is picked up).
+        if (returnSending.current || Math.abs((px4.returnAltM ?? -1) - altM) < 1) return
+        returnSending.current = true
+        px4
+          .command('returnAlt', { relAltM: altM })
+          .catch((err: unknown) => console.warn('Could not set the return height', err))
+          .finally(() => (returnSending.current = false))
+      })
+      .catch((err: unknown) => console.warn('Return height check failed', err))
+    return () => {
+      cancelled = true
+    }
+  }, [returnKey, routeSafety, px4])
+
   const routeCheck: RouteCheckInfo | null = !checkKey
     ? null
     : checkResult?.key === checkKey
@@ -426,6 +479,7 @@ export function useDrone({ pickLocation }: Options = {}) {
         routeCrossM,
         routeCheck,
         overBuilding: collision.below,
+        returnPlan,
         autopilot,
         onTakeOver: takeOver,
       },
@@ -434,6 +488,8 @@ export function useDrone({ pickLocation }: Options = {}) {
       relAltM: hud?.state.relAltM ?? null,
     },
     trailVisible,
+    /** Return home's building-aware height (for Settings). */
+    returnPlan,
     setTrailVisible,
     /** For the route planner's search box. */
     routeToPlace,

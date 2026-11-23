@@ -104,7 +104,7 @@ function App() {
           </ul>
         </SettingsSection>
         <SettingsSection title="Geofence">
-          <GeofenceInfo status={drone.panel.px4.status} geofence={drone.panel.px4.geofence} />
+          <GeofenceInfo status={drone.panel.px4.status} geofence={drone.panel.px4.geofence} returnPlan={drone.returnPlan} />
         </SettingsSection>
         <p className="layer-panel__footer">
           City data:{' '}

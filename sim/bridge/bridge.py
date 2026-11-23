@@ -4,12 +4,13 @@ PX4 ⇄ browser bridge.
 Browsers can't speak MAVLink over UDP, so this service connects to PX4 with
 MAVSDK and exposes a WebSocket the React app talks to:
 
-  server → client  {"type": "status", "px4Connected": bool, "px4Version": str|null, "geofence": {...}}
+  server → client  {"type": "status", "px4Connected": bool, "px4Version": str|null, "geofence": {...},
+                    "returnAltM": number|null}
                    {"type": "state",  "state": {...DroneState...}}        (RATE_HZ)
                    {"type": "ack",    "id": str, "ok": bool, "error": str|null}
                    {"type": "notice", "level": "error", "message": str}   (e.g. offboard refused)
   client → server  {"type": "command", "id": str,
-                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset",
+                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset"|"returnAlt",
                     "altitudeM"?: number, "lat"?: number, "lon"?: number, "relAltM"?: number}
                    {"type": "velocity", "forwardMs": n, "rightMs": n, "downMs": n, "yawRateDegS": n}
                      Keyboard flying: body-frame velocity, sent ~10 Hz while keys are held.
@@ -28,6 +29,13 @@ Geofence: on every PX4 (re)connect the bridge uploads the City of Toronto bounda
 (FENCE_FILE, produced by `npm run data`) as an inclusion fence and sets a 120 m
 ceiling above home, with PX4's Return mode as the breach action. PX4 enforces it
 itself, whether or not a browser is connected.
+
+Return height: PX4's Return mode climbs to RTL_RETURN_ALT and flies straight home, not
+knowing about buildings. On connect the bridge turns off PX4's return cone (which lets
+it return lower near home) and sets a high default (RETURN_ALT_DEFAULT_M); while the app
+is open it sends "returnAlt" with a height that clears the buildings between the drone
+and home (it has the City building data). Unlike other commands, "returnAlt" doesn't
+interrupt keyboard flying.
 """
 
 import asyncio
@@ -63,6 +71,10 @@ FENCE_FILE = os.environ.get("FENCE_FILE", "/data/boundary-fence.geojson")
 FENCE_CEILING_M = float(os.environ.get("FENCE_CEILING_M", "120"))
 FENCE_ACTION_RETURN = 3  # PX4 GF_ACTION: 1 warning, 2 hold, 3 return, 4 terminate, 5 land
 PX4_MAX_FENCE_POINTS = 63  # PX4 dataman holds 64 fence entries (one is bookkeeping)
+# Return home (see module docstring). Stay under the geofence ceiling, or the return itself breaches it.
+RETURN_ALT_MAX_M = FENCE_CEILING_M - 5
+RETURN_ALT_MIN_M = 20.0
+RETURN_ALT_DEFAULT_M = RETURN_ALT_MAX_M  # until the app sends a building-aware height
 # Flight-mode telemetry lags a mode switch; ignore "not offboard" reports this soon after starting.
 OFFBOARD_MODE_GRACE_S = 1.5
 
@@ -114,6 +126,8 @@ class Bridge:
         self.offboard_blocked = False
         self.resetting = False
         self.geofence = {"source": None, "points": 0, "ceilingM": FENCE_CEILING_M, "uploaded": False, "error": None}
+        # Height PX4 returns home at, as last set (None until set on connect).
+        self.return_alt: float | None = None
         self.s = {
             "lat": 0.0,
             "lon": 0.0,
@@ -187,6 +201,7 @@ class Bridge:
             self.px4_version = None
         log.info("PX4 connected (version %s)", self.px4_version)
         asyncio.create_task(self.upload_geofence())
+        asyncio.create_task(self.setup_return())
         t = self.drone.telemetry
         for setter in (t.set_rate_position, t.set_rate_attitude_euler, t.set_rate_velocity_ned):
             try:
@@ -224,6 +239,25 @@ class Bridge:
         except Exception as e:  # noqa: BLE001
             g["error"] = str(e)
             log.warning("Geofence upload failed: %s", e)
+        self.broadcast_status()
+
+    async def setup_return(self) -> None:
+        """Return home always climbs to the return height (no cone), starting high and safe."""
+        self.return_alt = None
+        try:
+            await self.drone.param.set_param_int("RTL_CONE_ANG", 0)
+            await self.set_return_alt(RETURN_ALT_DEFAULT_M)
+            log.info("Return home: cone off, %.0f m until the app sends a building-aware height", RETURN_ALT_DEFAULT_M)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Could not set up Return home: %s", e)
+
+    async def set_return_alt(self, rel_alt_m: float) -> None:
+        alt = round(max(RETURN_ALT_MIN_M, min(RETURN_ALT_MAX_M, rel_alt_m)), 1)
+        if alt == self.return_alt:
+            return
+        await self.drone.action.set_return_to_launch_altitude(alt)
+        log.debug("Return height %.0f m", alt)
+        self.return_alt = alt
         self.broadcast_status()
 
     async def watch_position(self) -> None:
@@ -283,6 +317,10 @@ class Bridge:
 
     async def run_command(self, action: str, msg: dict) -> None:
         a = self.drone.action
+        if action == "returnAlt":
+            # A setting, not a flight command: leave keyboard flying alone.
+            await self.set_return_alt(float(msg["relAltM"]))
+            return
         # Any explicit command takes over from keyboard flying (a deliberate switch, so no block).
         self.offboard_active = False
         self.offboard_blocked = False
@@ -436,6 +474,7 @@ class Bridge:
                 "px4Connected": self.px4_connected,
                 "px4Version": self.px4_version,
                 "geofence": self.geofence,
+                "returnAltM": self.return_alt,
                 "resetting": self.resetting,
             }
         )
@@ -470,7 +509,7 @@ class Bridge:
             reply.update(ok=False, error="PX4 is not connected")
         else:
             try:
-                log.info("Command: %s", action)
+                (log.debug if action == "returnAlt" else log.info)("Command: %s", action)
                 await self.run_command(action, msg)
             except Exception as e:  # noqa: BLE001 - report PX4's refusal back to the user
                 log.warning("Command %s failed: %s", action, e)

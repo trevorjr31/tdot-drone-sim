@@ -1,7 +1,16 @@
 import { useState, type ReactNode } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
-import { crossingAltM, ROUTE_MAX_ALT_M, routeProblem, type Mission, type RouteCheckInfo, type RoutePhase } from '../drone/useDrone'
+import {
+  crossingAltM,
+  RETURN_MAX_ALT_M,
+  ROUTE_MAX_ALT_M,
+  routeProblem,
+  type Mission,
+  type ReturnPlan,
+  type RouteCheckInfo,
+  type RoutePhase,
+} from '../drone/useDrone'
 
 type Props = {
   /** Search box shown in Plan a route, under Pick on map (picking a result sets the destination). */
@@ -40,6 +49,8 @@ type Props = {
     routeCheck: RouteCheckInfo | null
     /** The building directly below the drone, if any (for the landing warning). */
     overBuilding: { name: string | null; heightM: number } | null
+    /** Return home's height, kept clear of buildings; `safe` false when no straight return clears them. */
+    returnPlan: ReturnPlan | null
     /** The autopilot is flying a planned route. */
     autopilot: boolean
     onTakeOver: () => void
@@ -255,6 +266,8 @@ function FlightControls(p: Props['px4']) {
         </button>
       </div>
 
+      <ReturnWarning plan={p.returnPlan} />
+
       {below && (
         <div className="drone-panel__check is-bad" role="alert">
           <span>
@@ -334,11 +347,23 @@ function Autopilot(p: Props['px4']) {
       <div className="drone-panel__flying">
         <span>{status}</span>
       </div>
+      <ReturnWarning plan={p.returnPlan} />
       <button type="button" className="btn btn--primary btn--block" onClick={p.onTakeOver} disabled={p.busy === 'hold'}>
         Take over controls
       </button>
       <div className="drone-panel__hint">Stops the autopilot (the drone holds where it is) and gives you the controls.</div>
     </>
+  )
+}
+
+/** Shown in flight when Return home can't clear the buildings between the drone and home. */
+function ReturnWarning({ plan }: { plan: ReturnPlan | null }) {
+  if (!plan || plan.safe || !plan.highest) return null
+  return (
+    <div className="drone-panel__check is-bad" role="alert">
+      No safe return from here: <strong>{plan.highest.name ?? 'a building'}</strong> ({plan.highest.heightM} m) is in the way
+      home, too tall to clear under {RETURN_MAX_ALT_M} m. Move away from it before Return (or a geofence return).
+    </div>
   )
 }
 

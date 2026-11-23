@@ -97,6 +97,8 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   **Plan a route** at the bottom opens the route planner in the air: choose a destination
   and height, then **Fly there** hands over to the autopilot (same route safety; from the
   air it never descends before arriving). *Back* returns to the controls.
+  **Return** flies home at a height that clears the buildings in the way (see "Return home
+  height" in the top-level README); if none can under the ceiling, the panel warns.
   **Land** over a building asks first: PX4 lands straight down and doesn't know the
   building is there, so the drone would crash onto the roof. *Return home* is offered
   instead.
@@ -125,7 +127,8 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   readout gives the distance to the nearest building at the drone's height (amber under
   15 m, red under 5 m). PX4's own physics still doesn't know about buildings.
 - **Settings → Geofence** shows the fence PX4 enforces (read only): status, area (City of
-  Toronto boundary), ceiling and breach action (see the top-level README). The panel only
+  Toronto boundary), ceiling, breach action and the current Return height (see the
+  top-level README). The panel only
   mentions it if the upload failed.
 
 In dev builds `window.viewer` and `window.tdot` (`{ px4, droneView }`) are available in

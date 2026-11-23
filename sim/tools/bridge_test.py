@@ -31,6 +31,10 @@ def distance_m(lat1, lon1, lat2, lon2):
     return math.hypot(x, y)
 
 
+# Return height used to test Return; the bridge's default (FENCE_CEILING_M - 5) until the app sets one.
+RETURN_TEST_ALT_M = 45.0
+RETURN_DEFAULT_ALT_M = 115.0
+
 TORONTO_BOX = {"lat": (43.58, 43.86), "lon": (-79.64, -79.11)}
 
 
@@ -40,6 +44,7 @@ class Client:
         self.state: dict | None = None
         self.px4_connected = False
         self.geofence: dict | None = None
+        self.return_alt: float | None = None
         self.acks: dict[str, dict] = {}
         self.states_seen = 0
 
@@ -52,6 +57,7 @@ class Client:
             elif msg["type"] == "status":
                 self.px4_connected = msg["px4Connected"]
                 self.geofence = msg.get("geofence")
+                self.return_alt = msg.get("returnAltM")
                 print(f"Status: PX4 {'connected' if msg['px4Connected'] else 'not connected'} ({msg.get('px4Version')})")
             elif msg["type"] == "ack":
                 self.acks[msg["id"]] = msg
@@ -118,8 +124,12 @@ async def main():
 
         # Keyboard flying: hold "forward" (W) for 4 s, sending like the browser does (10 Hz).
         start = (c.state["lat"], c.state["lon"])
-        for _ in range(40):
+        for i in range(40):
             await ws.send(json.dumps({"type": "velocity", "forwardMs": 5, "rightMs": 0, "downMs": 0, "yawRateDegS": 0}))
+            if i == 20:
+                # The app updates the return height every few seconds while flying: that must
+                # not interrupt keyboard flying (checked just below: still Offboard and moving).
+                await ws.send(json.dumps({"type": "command", "id": "return-alt-kb", "action": "returnAlt", "relAltM": 60}))
             await asyncio.sleep(0.1)
         moved = distance_m(*start, c.state["lat"], c.state["lon"])
         print(f"Keyboard forward: moved {moved:.1f} m, mode {c.state['flightMode']}, speed {c.state['groundSpeedMs']:.1f} m/s")
@@ -143,6 +153,22 @@ async def main():
         await c.until(lambda: distance_m(*target, c.state["lat"], c.state["lon"]) < ARRIVAL_RADIUS_M, 60, "arrival at fly-to target")
         print(f"Fly-to: arrived within {distance_m(*target, c.state['lat'], c.state['lon']):.1f} m at {c.state['relAltM']:.0f} m")
 
+        # Return home climbs straight up to the return height before heading home (the app
+        # sets that height to clear the buildings in the way; the bridge turns PX4's cone off).
+        await c.command("returnAlt", relAltM=RETURN_TEST_ALT_M)
+        await c.until(lambda: c.return_alt == RETURN_TEST_ALT_M, 10, "return height in bridge status")
+        home = c.state["home"]
+        away = distance_m(home["lat"], home["lon"], c.state["lat"], c.state["lon"])
+        await c.command("rtl")
+        await c.until(lambda: c.state["relAltM"] >= RETURN_TEST_ALT_M - 2, 60, "climb to the return height")
+        closer = away - distance_m(home["lat"], home["lon"], c.state["lat"], c.state["lon"])
+        print(f"Return: climbed to {c.state['relAltM']:.0f} m having moved {closer:.1f} m towards home ({away:.0f} m away)")
+        if closer > 10:
+            sys.exit("FAIL: Return headed home before reaching the return height")
+        await c.command("hold")
+        # Mode telemetry lags the command; the ceiling check below needs Return to be over.
+        await c.until(lambda: c.state["flightMode"] == "Hold", 10, "Hold after stopping the return")
+
         # Geofence ceiling: climb with the "up" key until PX4 takes over with Return.
         max_alt = 0.0
         try:
@@ -164,13 +190,17 @@ async def main():
 
         # Reset: PX4 restarts and the drone is back on the ground at home.
         await c.command("reset")
+
+        def home_distance():
+            # Read home fresh each time: right after PX4 restarts it can briefly be unset (NaN).
+            h = c.state.get("home") or {}
+            d = distance_m(h["lat"], h["lon"], c.state["lat"], c.state["lon"]) if h.get("lat") is not None else math.nan
+            return d if not math.isnan(d) else None
+
+        await c.until(lambda: (d := home_distance()) is not None and d < 3 and not c.state["armed"], 30, "drone back at home after reset")
         home = c.state["home"]
-        await c.until(
-            lambda: distance_m(home["lat"], home["lon"], c.state["lat"], c.state["lon"]) < 3 and not c.state["armed"],
-            30,
-            "drone back at home after reset",
-        )
         await c.until(lambda: c.geofence and c.geofence["uploaded"], 30, "geofence after reset")
+        await c.until(lambda: c.return_alt == RETURN_DEFAULT_ALT_M, 30, "safe default return height after reset")
         print(f"Reset: back at home ({distance_m(home['lat'], home['lon'], c.state['lat'], c.state['lon']):.1f} m), disarmed, geofence uploaded")
         print("PASS")
         pump.cancel()

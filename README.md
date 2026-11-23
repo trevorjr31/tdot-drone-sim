@@ -68,6 +68,18 @@ The fence comes from `frontend/public/data/toronto/boundary-fence.geojson` (made
 `npm run data`, mounted read-only into the bridge). PX4 stores at most 64 fence points,
 so the boundary is simplified to ~50 points, within about 500 m of the true line.
 
+### Return home height
+
+PX4's Return mode climbs to its return height and flies **straight** home, without knowing
+about buildings, and near home its "return cone" lets it come back lower still. So on every
+(re)connect the bridge turns the cone off and sets a high, safe default (115 m, just under
+the ceiling). While the app is open it works out the safe height for the straight line from
+the drone to home (10 m above the tallest City building on it) and sends it as `returnAlt`
+every time it changes; PX4 climbs to it on the spot before heading home, whatever starts
+the return (the Return button, a geofence breach, a PX4 failsafe). If a building on the way
+is too tall to clear under 115 m, the app warns in the drone panel. With the app closed,
+PX4 keeps the last height it was given.
+
 If PX4 takes over while you're flying with the keyboard (geofence, failsafe), the bridge
 won't take control back until the keys are released, since re-entering offboard would
 count as a pilot takeover and cancel PX4's failsafe.
@@ -78,8 +90,10 @@ Both check home is in Toronto, take off to 20 m and land. `flight_test.py` talks
 directly over MAVLink; `bridge_test.py` goes through the bridge's WebSocket exactly as the
 browser does: it checks the geofence is loaded and the 20 Hz state rate, flies forward
 with keyboard-style velocity messages, checks the hover and hand-back to Hold, flies to a
-point 60 m north, climbs into the 120 m ceiling and checks PX4 switches to Return, then
-crashes (motors cut: it must fall and disarm) and resets (back at home, geofence re-uploaded):
+point 60 m north, sets a return height and checks Return climbs to it before heading home,
+climbs into the 120 m ceiling and checks PX4 switches to Return, then crashes (motors cut:
+it must fall and disarm) and resets (back at home, geofence re-uploaded, return height back
+to the safe default):
 
 ```bash
 docker run --rm --network container:tdot-px4 -v "$PWD/sim/tools:/tools:ro" \
@@ -106,9 +120,9 @@ WebSocket protocol (see [sim/bridge/bridge.py](sim/bridge/bridge.py)):
 
 | Direction | Message |
 |---|---|
-| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…}}` on connect and on change |
+| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…},"returnAltM":99}` on connect and on change |
 | bridge → app | `{"type":"state","state":{…}}` at 20 Hz, same fields as the app's `DroneState` |
-| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `crash`, `reset`) |
+| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `crash`, `reset`, `returnAlt` with `relAltM`: Return's height, doesn't interrupt keyboard flying) |
 | bridge → app | `{"type":"ack","id":"…","ok":false,"error":"…"}` with PX4's reason if refused |
 | app → bridge | `{"type":"velocity","forwardMs":5,"rightMs":0,"downMs":0,"yawRateDegS":0}` ~10 Hz while keys are held (keyboard flying; body frame, down positive) |
 | bridge → app | `{"type":"notice","level":"error","message":"…"}` e.g. "Take off first" |
