@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
 import {
@@ -38,6 +38,8 @@ type Props = {
     routeDest: FlyToTarget | null
     onPickRouteDest: () => void
     onClearRouteDest: () => void
+    /** The planner's chosen height changed (for the route preview on the map). */
+    onPlanAltM: (altM: number) => void
     onStartRoute: (altM: number) => void
     /** Where the autopilot is in a planned route. */
     routePhase: RoutePhase | null
@@ -185,6 +187,8 @@ function RoutePlanner(
   p: Props['px4'] & { ready: boolean; search: ReactNode; airborne: boolean; initialAltM: number; currentAltM: number | null },
 ) {
   const [altM, setAltM] = useState(() => Math.max(5, Math.min(120, Math.round(p.initialAltM))))
+  const { onPlanAltM } = p
+  useEffect(() => onPlanAltM(altM), [altM, onPlanAltM])
   return (
     <>
       <div className="drone-panel__label">

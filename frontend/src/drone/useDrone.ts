@@ -291,6 +291,17 @@ export function useDrone({ pickLocation }: Options = {}) {
       ? checkResult.info
       : { status: 'checking' }
 
+  // While planning a route: show it in grey along the path it will fly (blue once it's flown).
+  // The route preview uses the planner's height and, once known, the route check's safe height.
+  const [planAltM, setPlanAltM] = useState(30)
+  const minSafeM = routeCheck?.status === 'done' ? routeCheck.minSafeRelAltM : 0
+  const planInAirM = hud?.state.inAir ? hud.state.relAltM : null
+  const previewCrossM = Math.round(crossingAltM(planAltM, planInAirM, minSafeM))
+  useEffect(() => {
+    const show = mission === 'route' && !autopilot && routeDest
+    droneView?.setPreview(show ? { dest: routeDest, crossRelM: previewCrossM, endRelM: planAltM } : null)
+  }, [droneView, mission, autopilot, routeDest, previewCrossM, planAltM])
+
   // --- pre-flight -----------------------------------------------------------
 
   /** Free fly: take off straight away and hand over the controls. */
@@ -473,6 +484,7 @@ export function useDrone({ pickLocation }: Options = {}) {
         routeDest,
         onPickRouteDest: () => void pickRouteDest(),
         onClearRouteDest: () => setRouteDest(null),
+        onPlanAltM: setPlanAltM,
         onStartRoute: (altM: number) => void startRoute(altM),
         routePhase,
         routeAltM,
