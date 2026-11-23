@@ -925,6 +925,49 @@ body,
   font-size: 13px;
 }
 
+.drone-panel__dest .btn__ellipsis {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Route stops: numbered rows, one per stop. */
+.drone-panel__stops {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.drone-panel__stops .drone-panel__dest {
+  gap: 6px;
+  padding: 4px 6px 4px 8px;
+}
+
+.drone-panel__stop-num {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(76, 201, 240, 0.25);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* Planned route: distance and flight time. */
+.drone-panel__summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--panel-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  font-size: 13px;
+}
+
 .drone-panel__or {
   color: var(--panel-muted);
   font-size: 11px;

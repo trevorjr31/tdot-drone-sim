@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
 import { BATTERY_CRITICAL, BATTERY_EMERGENCY, formatMinutes, type BatteryInfo } from '../drone/battery'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
+import { formatDistance, formatDuration, ROUTE_MAX_STOPS, type RouteEstimate } from '../drone/routePlan'
 import {
   crossingAltM,
   RETURN_MAX_ALT_M,
@@ -10,11 +11,11 @@ import {
   type Mission,
   type ReturnPlan,
   type RouteCheckInfo,
-  type RoutePhase,
+  type RouteProgress,
 } from '../drone/useDrone'
 
 type Props = {
-  /** Search box shown in Plan a route, under Pick on map (picking a result sets the destination). */
+  /** Search box shown in Plan a route, under Pick on map (picking a result adds it as a stop). */
   routeSearch: ReactNode
   /** Hit a building: flying is over until Reset. */
   crashed: boolean
@@ -36,19 +37,20 @@ type Props = {
     onFreeFly: () => void
     onPlanRoute: () => void
     onBack: () => void
-    routeDest: FlyToTarget | null
-    onPickRouteDest: () => void
-    onClearRouteDest: () => void
-    /** The planner's chosen height changed (for the route preview on the map). */
+    /** The route being planned: its stops, in order (the last is the destination). */
+    routeStops: FlyToTarget[]
+    /** Add a stop by clicking the map. */
+    onPickRouteStop: () => void
+    onRemoveStop: (i: number) => void
+    onMoveStopUp: (i: number) => void
+    /** The planner's chosen height changed (for the estimate and the route preview on the map). */
     onPlanAltM: (altM: number) => void
     onStartRoute: (altM: number) => void
+    /** How far and how long the route being planned is. */
+    routeEstimate: RouteEstimate | null
     /** Where the autopilot is in a planned route. */
-    routePhase: RoutePhase | null
-    /** Height the route is flown at, above home. */
-    routeAltM: number | null
-    /** Height the route crosses at, to clear the buildings on the way. */
-    routeCrossM: number | null
-    /** Buildings between the drone and the destination (while planning). */
+    routeProgress: RouteProgress | null
+    /** Buildings along the route (while planning). */
     routeCheck: RouteCheckInfo | null
     /** The building directly below the drone, if any (for the landing warning). */
     overBuilding: { name: string | null; heightM: number } | null
@@ -201,20 +203,32 @@ function RoutePlanner(
         </button>
       </div>
 
-      <div className="drone-panel__step">Destination</div>
-      {p.routeDest ? (
-        <div className="drone-panel__dest">
-          <span className="btn__ellipsis" title={p.routeDest.label}>
-            {p.routeDest.label}
-          </span>
-          <button type="button" className="btn btn--small" onClick={p.onClearRouteDest}>
-            Change
-          </button>
-        </div>
-      ) : (
+      <div className="drone-panel__step">{p.routeStops.length > 1 ? 'Stops' : 'Destination'}</div>
+      {p.routeStops.length > 0 && (
+        <ol className="drone-panel__stops">
+          {p.routeStops.map((stop, i) => (
+            <li key={`${i}:${stop.lat},${stop.lon}`} className="drone-panel__dest">
+              {p.routeStops.length > 1 && <span className="drone-panel__stop-num">{i + 1}</span>}
+              <span className="btn__ellipsis" title={stop.label}>
+                {stop.label}
+              </span>
+              {i > 0 && (
+                <button type="button" className="btn btn--small" onClick={() => p.onMoveStopUp(i)} aria-label={`Move ${stop.label} earlier`} title="Move earlier">
+                  ↑
+                </button>
+              )}
+              <button type="button" className="btn btn--small" onClick={() => p.onRemoveStop(i)} aria-label={`Remove ${stop.label}`} title="Remove">
+                ×
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      {p.routeStops.length < ROUTE_MAX_STOPS && (
         <>
+          {p.routeStops.length > 0 && <div className="drone-panel__or">Add a stop</div>}
           <div className="drone-panel__buttons">
-            <button type="button" className="btn" onClick={p.onPickRouteDest} disabled={p.picking}>
+            <button type="button" className="btn" onClick={p.onPickRouteStop} disabled={p.picking}>
               {p.picking ? 'Click the map… (Esc)' : 'Pick on map'}
             </button>
           </div>
@@ -223,7 +237,7 @@ function RoutePlanner(
         </>
       )}
 
-      {p.routeDest && (
+      {p.routeStops.length > 0 && (
         <>
           <div className="drone-panel__step">Height</div>
           <label className="drone-panel__alt" title="Height above the launch point to fly at">
@@ -238,7 +252,8 @@ function RoutePlanner(
             />
             m above {p.airborne ? 'home' : 'the launch point'}
           </label>
-          <RouteCheck check={p.routeCheck} altM={altM} currentAltM={p.currentAltM} onUse={setAltM} />
+          <RouteCheck check={p.routeCheck} altM={altM} currentAltM={p.currentAltM} onUse={setAltM} stops={p.routeStops.length} />
+          <RouteSummary estimate={p.routeEstimate} battery={p.battery} stops={p.routeStops.length} />
           <button
             type="button"
             className="btn btn--primary btn--block"
@@ -336,25 +351,42 @@ function FlightControls(p: Props['px4']) {
 
 /** Planned route in flight: the autopilot flies; the only option is to take over. */
 function Autopilot(p: Props['px4']) {
-  const dest = <strong>{p.routeDest?.label ?? 'the destination'}</strong>
-  const alt = p.routeAltM !== null ? `${p.routeAltM} m` : 'height'
-  const cross = p.routeCrossM !== null ? `${p.routeCrossM} m` : alt
-  const status =
-    p.routePhase === 'climbing' ? (
-      <>Climbing to {cross}, then flying to {dest}…</>
-    ) : p.routePhase === 'flying' ? (
-      <>Flying to {dest}…</>
-    ) : p.routePhase === 'descending' ? (
-      <>Descending to {alt} over {dest}…</>
+  const r = p.routeProgress
+  const stop = r ? (
+    <>
+      {r.stopCount > 1 && `stop ${r.stopIndex + 1} of ${r.stopCount}, `}
+      <strong>{r.stopLabel}</strong>
+    </>
+  ) : (
+    <strong>the destination</strong>
+  )
+  const h = r ? `${Math.round(r.heightM)} m` : 'height'
+  const status = !r ? (
+    <>Flying…</>
+  ) : r.phase === 'climbing' ? (
+    <>Climbing to {h}, then flying to {stop}…</>
+  ) : r.phase === 'flying' ? (
+    <>Flying to {stop}…</>
+  ) : r.phase === 'descending' ? (
+    r.finalDescent ? (
+      <>Descending to {h} over {stop}…</>
     ) : (
-      <>Arrived at {dest}</>
+      <>Descending to {h}, then flying to {stop}…</>
     )
+  ) : (
+    <>Arrived at {stop}</>
+  )
   return (
     <>
       <div className="drone-panel__label">Autopilot</div>
       <div className="drone-panel__flying">
         <span>{status}</span>
       </div>
+      {r?.remaining && (
+        <div className="drone-panel__hint">
+          {formatDistance(r.remaining.distanceM)} to go · about {formatDuration(r.remaining.timeS)}
+        </div>
+      )}
       <BatteryWarning battery={p.battery} />
       <ReturnWarning plan={p.returnPlan} />
       <button type="button" className="btn btn--primary btn--block" onClick={p.onTakeOver} disabled={p.busy === 'hold'}>
@@ -413,11 +445,14 @@ function RouteCheck({
   altM,
   currentAltM,
   onUse,
+  stops,
 }: {
   check: RouteCheckInfo | null
   altM: number
   currentAltM: number | null
   onUse: (m: number) => void
+  /** Number of stops (the text differs for a multi-stop route). */
+  stops: number
 }) {
   if (!c) return null
   if (c.status === 'checking') return <div className="drone-panel__hint">Checking the buildings along the route…</div>
@@ -452,13 +487,44 @@ function RouteCheck({
   if (cross > altM + 2)
     return (
       <div className="drone-panel__check is-ok">
-        Crosses at {cross} m to clear {what}, then descends to {altM} m over the destination.
+        {stops > 1 ? (
+          <>
+            Flies as high as {cross} m to clear {what}, and ends at {altM} m over the last stop.
+          </>
+        ) : (
+          <>
+            Crosses at {cross} m to clear {what}, then descends to {altM} m over the destination.
+          </>
+        )}
       </div>
     )
   return (
     <div className="drone-panel__check is-ok">
       Clears the tallest building on the way: {what} (needs {c.minSafeRelAltM} m).
     </div>
+  )
+}
+
+/** The planned route's length and flight time, and whether the battery lasts that long. */
+function RouteSummary({ estimate: e, battery, stops }: { estimate: RouteEstimate | null; battery: BatteryInfo | null; stops: number }) {
+  if (!e) return null
+  const short = battery?.minToReturn != null && e.timeS / 60 > battery.minToReturn
+  return (
+    <>
+      <div className="drone-panel__summary" aria-label="Route estimate">
+        <span>
+          <strong>{formatDistance(e.distanceM)}</strong> {stops > 1 ? `· ${stops} stops` : ''}
+        </span>
+        <span>
+          about <strong>{formatDuration(e.timeS)}</strong>
+        </span>
+      </div>
+      {short && (
+        <div className="drone-panel__check is-warn">
+          Not enough battery: PX4 will turn for home in {formatMinutes(battery!.minToReturn!)}, before this route ends.
+        </div>
+      )}
+    </>
   )
 }
 

@@ -43,8 +43,18 @@ const NORTH_WEST_UP = Transforms.localFrameToFixedFrameGenerator('north', 'west'
 
 export type FlyToTarget = { lat: number; lon: number; label: string }
 
-/** A route being planned: where to, the height it crosses at and the height it ends at (metres above home). */
-export type RoutePreview = { dest: FlyToTarget; crossRelM: number; endRelM: number }
+/** A point on a planned route's path, metres above home; `atDrone` points sit over the drone. */
+export type PreviewPoint = { lat: number; lon: number; relAltM: number } | { atDrone: true; relAltM: number }
+
+/** A planned route, drawn grey: a labelled marker per stop and the path it will fly. */
+export type RoutePreview = {
+  markers: { lat: number; lon: number; label: string }[]
+  path: PreviewPoint[]
+  /** Start the line at the drone (while planning), or at the first point (the rest of a route in flight). */
+  fromDrone: boolean
+}
+
+const PREVIEW_COLOUR = '#d1d1d6'
 
 export type { CrashSite } from './crash'
 
@@ -105,8 +115,9 @@ export class DroneView {
   private hasTargetPosition = false
   /** A planned route, before it's flown (drawn grey). */
   private preview: RoutePreview | null = null
-  /** The preview's path for the current frame: up to the crossing height, across, down to the end height. */
+  /** The preview's path for the current frame. */
   private previewPath: Cartesian3[] = []
+  private previewMarkers: Entity[] = []
   private readonly cleanups: (() => void)[] = []
   private unsubscribeSource: (() => void) | undefined
   private source: DroneSource | undefined
@@ -193,11 +204,15 @@ export class DroneView {
     for (const listener of this.targetListeners) listener(target)
   }
 
-  /** Show a planned route (grey) while it's being planned; hidden while a fly-to target shows. */
+  /** Show a planned route (grey): while planning, and the stops still to come in flight. */
   setPreview(preview: RoutePreview | null) {
     this.preview = preview
     this.previewPath = []
     this.poseAt = -Infinity
+    for (const e of this.previewMarkers) this.viewer.entities.remove(e)
+    this.previewMarkers = (preview?.markers ?? []).map((m, i) =>
+      this.viewer.entities.add({ id: `drone-route-stop-${i}`, ...markerGraphics(m.lat, m.lon, m.label, PREVIEW_COLOUR) }),
+    )
   }
 
   onTargetChange(listener: (t: FlyToTarget | null) => void) {
@@ -222,7 +237,7 @@ export class DroneView {
     this.cleanups.forEach((fn) => fn())
     if (!this.viewer.isDestroyed()) {
       this.viewer.camera.lookAtTransform(Matrix4.IDENTITY) // release the camera
-      for (const e of [...this.parts.map((p) => p.entity), ...this.others]) this.viewer.entities.remove(e)
+      for (const e of [...this.parts.map((p) => p.entity), ...this.others, ...this.previewMarkers]) this.viewer.entities.remove(e)
     }
     this.hudListeners.clear()
     this.targetListeners.clear()
@@ -462,13 +477,16 @@ export class DroneView {
       () => (this.hasTargetPosition ? [this.dronePosition, this.targetPosition] : []),
       'Fly to',
     )
-    // A route being planned: the same in grey, along the path it will fly.
-    this.addTargetOverlay(
-      'drone-route-preview',
-      '#d1d1d6',
-      () => (this.target ? null : (this.preview?.dest ?? null)),
-      () => this.previewPath,
-      'Destination',
+    // A planned route: grey markers (see setPreview) and a dashed line along the path it will fly.
+    this.others.push(
+      entities.add({
+        id: 'drone-route-preview-line',
+        polyline: {
+          positions: new CallbackProperty(() => (this.poseFor() ? this.previewPath : []), false),
+          width: 2,
+          material: new PolylineDashMaterialProperty({ color: Color.fromCssColorString(PREVIEW_COLOUR), dashLength: 16 }),
+        },
+      }),
     )
     // A dot that stays visible from far away, when the model itself is too small to see.
     this.others.push(
@@ -497,6 +515,7 @@ export class DroneView {
   ) {
     const colour = Color.fromCssColorString(css)
     const entities = this.viewer.entities
+    const marker = markerGraphics(0, 0, '', css)
     this.others.push(
       entities.add({
         id,
@@ -504,28 +523,13 @@ export class DroneView {
           const t = get()
           return t ? Cartesian3.fromDegrees(t.lon, t.lat) : undefined
         }, false),
-        point: {
-          pixelSize: 16,
-          color: colour.withAlpha(0.25),
-          outlineColor: colour,
-          outlineWidth: 3,
-          heightReference: HeightReference.CLAMP_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        },
+        point: marker.point,
         label: {
+          ...marker.label,
           text: new CallbackProperty(() => {
             const t = get()
             return t ? `${prefix}: ${t.label}` : ''
           }, false),
-          font: '600 13px system-ui, sans-serif',
-          fillColor: Color.WHITE,
-          outlineColor: Color.fromCssColorString('#1d1d1f'),
-          outlineWidth: 3,
-          style: LabelStyle.FILL_AND_OUTLINE,
-          verticalOrigin: VerticalOrigin.BOTTOM,
-          pixelOffset: new Cartesian2(0, -14),
-          heightReference: HeightReference.CLAMP_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       }),
       entities.add({
@@ -540,14 +544,40 @@ export class DroneView {
   }
 }
 
-/** A planned route's path from the drone: straight up to the crossing height, across, then down to the end height. */
+/** A planned route's path for this frame, from the drone (or its first point) through each point. */
 function previewPath(p: RoutePreview, state: DroneState, dronePosition: Cartesian3): Cartesian3[] {
-  const at = (lon: number, lat: number, relM: number) =>
-    Cartesian3.fromDegrees(lon, lat, state.home.altAmslM + relM + TORONTO_GEOID_OFFSET_M)
-  const path = [Cartesian3.clone(dronePosition)]
-  const crossRelM = Math.max(p.crossRelM, state.relAltM)
-  if (crossRelM > state.relAltM + 0.5) path.push(at(state.lon, state.lat, crossRelM))
-  path.push(at(p.dest.lon, p.dest.lat, crossRelM))
-  if (p.endRelM < crossRelM - 0.5) path.push(at(p.dest.lon, p.dest.lat, p.endRelM))
-  return path
+  const toCartesian = (pt: PreviewPoint) =>
+    'atDrone' in pt
+      ? Cartesian3.fromDegrees(state.lon, state.lat, state.home.altAmslM + pt.relAltM + TORONTO_GEOID_OFFSET_M)
+      : Cartesian3.fromDegrees(pt.lon, pt.lat, state.home.altAmslM + pt.relAltM + TORONTO_GEOID_OFFSET_M)
+  const path = p.path.map(toCartesian)
+  return p.fromDrone ? [Cartesian3.clone(dronePosition), ...path] : path
+}
+
+/** A ring on the ground with a label above it (fly-to target, route stops). */
+function markerGraphics(lat: number, lon: number, label: string, css: string) {
+  const colour = Color.fromCssColorString(css)
+  return {
+    position: Cartesian3.fromDegrees(lon, lat),
+    point: {
+      pixelSize: 16,
+      color: colour.withAlpha(0.25),
+      outlineColor: colour,
+      outlineWidth: 3,
+      heightReference: HeightReference.CLAMP_TO_GROUND,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+    label: {
+      text: label,
+      font: '600 13px system-ui, sans-serif',
+      fillColor: Color.WHITE,
+      outlineColor: Color.fromCssColorString('#1d1d1f'),
+      outlineWidth: 3,
+      style: LabelStyle.FILL_AND_OUTLINE,
+      verticalOrigin: VerticalOrigin.BOTTOM,
+      pixelOffset: new Cartesian2(0, -14),
+      heightReference: HeightReference.CLAMP_TO_GROUND,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+  }
 }

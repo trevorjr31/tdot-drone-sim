@@ -76,17 +76,22 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
 - **Before a flight** the panel shows two choices (the connection status is always visible
   in its header, even when collapsed):
   - **Free fly**: takes off straight away (to 30 m) and goes to the controls.
-  - **Plan a route**: choose a destination (*Pick on map*, or search for a place),
-    then set the **height** to arrive at and **Take off**. The drone flies there on
-    autopilot: the panel shows its progress and a single **Take over controls** button,
-    which stops the autopilot (PX4 holds where it is) and switches to the manual controls
-    below. *Back* returns to the choice.
+  - **Plan a route**: choose a destination (*Pick on map*, or search for a place); add
+    more stops the same way (up to 8) to visit them in order, reorder them with ↑ or
+    remove them with ×. Set the **height** to arrive at and **Take off**. The panel shows
+    the route's **distance and flight time** (estimated at PX4's speeds, as measured in the
+    sim) and warns if the battery would run low before the end, and the map shows the stops
+    and the path in grey. The drone flies the route on autopilot: the panel shows which
+    stop it's heading for, the distance and time to go, and a single **Take over controls**
+    button, which stops the autopilot (PX4 holds where it is) and switches to the manual
+    controls below. *Back* returns to the choice.
   - **Route safety**: PX4 doesn't know about buildings, so the app checks the straight line
-    to the destination against the City massing (a 15 m strip either side) and the panel
-    names the tallest building on the way. The autopilot picks a crossing height 10 m
-    above it (or your height, if higher), climbs to it straight up, crosses, then descends
-    to your height over the destination. Take off is refused if the route needs more than
-    the 120 m ceiling, or if your height is too low for the destination itself.
+    of each leg against the City massing (a 15 m strip either side) and the panel names the
+    tallest building on the way. Each leg is flown at a crossing height 10 m above its
+    tallest building (or your height, if higher): the drone changes height straight up or
+    down, at the start or over a stop, never on the way, and descends to your height over
+    the last stop. Take off is refused if the route needs more than the 120 m ceiling, or if
+    your height is too low for the last stop itself.
 
   After landing (or Reset after a crash) the panel returns to this choice. Refusals
   (e.g. pre-arm checks failing) show in the panel.
@@ -94,7 +99,7 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   **keyboard flying**: **W/S** (or ↑/↓) forward/back, **A/D** slide, **←/→** (or Q/E)
   turn, **Space/Shift** up/down. The bridge puts PX4 in offboard mode and streams the
   velocity; letting go hovers, and after 3 s idle PX4 is handed back to Hold.
-  **Plan a route** at the bottom opens the route planner in the air: choose a destination
+  **Plan a route** at the bottom opens the route planner in the air: choose the stops
   and height, then **Fly there** hands over to the autopilot (same route safety; from the
   air it never descends before arriving). *Back* returns to the controls.
   **Return** flies home at a height that clears the buildings in the way (see "Return home

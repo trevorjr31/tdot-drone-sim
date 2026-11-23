@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { centreOf, type MapApi, type Place } from '../places/types'
-import type { DroneView, FlyToTarget, HudInfo } from './droneView'
+import type { DroneView, FlyToTarget, HudInfo, RoutePreview } from './droneView'
 import { BatteryEstimator, type BatteryInfo } from './battery'
 import { KeyboardFlight } from './keyboardFlight'
 import { Px4BridgeSource, type BridgeStatus, type Px4Command, type Px4CommandParams } from './px4Bridge'
@@ -9,6 +9,18 @@ import { useCollisions } from './useCollisions'
 import { loadMassingIndex, loadMassingTile } from '../data/torontoData'
 import { buildingName, type Building } from './collision'
 import { RouteSafety } from './routeSafety'
+import {
+  estimateRoute,
+  planPreview,
+  remainingPreview,
+  ROUTE_HEIGHT_TOLERANCE_M,
+  ROUTE_MAX_STOPS,
+  routeSteps,
+  stepStop,
+  type RouteEstimate,
+  type RouteStart,
+  type RouteStep,
+} from './routePlan'
 
 /** Where the autopilot is in a planned route. */
 export type RoutePhase = 'climbing' | 'flying' | 'descending' | 'arrived'
@@ -25,6 +37,8 @@ export type RouteCheckInfo =
       /** Lowest safe height to end at, over the destination. */
       destMinSafeRelAltM: number
       destHighest: { name: string | null; heightM: number } | null
+      /** Lowest safe crossing height for each leg (drone → stop 1, stop 1 → stop 2, …). */
+      legMinSafeM: number[]
     }
 
 /**
@@ -67,13 +81,29 @@ export type ReturnPlan = {
   safe: boolean
 }
 
+/** A planned route being flown: its steps, the one in progress, and the stops. */
+type RouteRun = { steps: RouteStep[]; i: number; stops: FlyToTarget[]; altM: number; phase: RoutePhase }
+
+/** A planned route in flight, as the panel shows it. */
+export type RouteProgress = {
+  phase: RoutePhase
+  /** The stop it's flying to (or climbing/descending for, or arrived at), 0-based. */
+  stopIndex: number
+  stopCount: number
+  stopLabel: string
+  /** Height of the current climb, descent or leg, metres above home. */
+  heightM: number
+  /** Distance and time still to go (null once arrived). */
+  remaining: RouteEstimate | null
+  /** Descending over the last stop (no more legs to fly). */
+  finalDescent: boolean
+}
+
 /** Pre-flight choice: free flying with the keyboard, or a planned route to a destination. */
 export type Mission = 'choose' | 'free' | 'route'
 
 /** Free fly takes off straight away to this height (above the launch point). */
 const FREE_FLY_ALT_M = 30
-/** A planned route starts its fly-to once within this much of the takeoff height. */
-const ROUTE_CLIMB_TOLERANCE_M = 2
 
 type Options = {
   /** Map click picker (from the map API), for "pick on map" fly-to. */
@@ -97,34 +127,26 @@ export function useDrone({ pickLocation }: Options = {}) {
   const [picking, setPicking] = useState(false)
   const [crashed, setCrashed] = useState(false)
   const [mission, setMission] = useState<Mission>('choose')
-  const [routeDest, setRouteDest] = useState<FlyToTarget | null>(null)
-  /** Planned route on autopilot: climbing, flying, descending or arrived. */
-  const [routePhase, setRoutePhase] = useState<RoutePhase | null>(null)
-  /** routePhase for event handlers (the target listener must know if the route is in its flying leg). */
-  const routePhaseRef = useRef<RoutePhase | null>(null)
-  useEffect(() => {
-    routePhaseRef.current = routePhase
-  }, [routePhase])
-  const [routeAltM, setRouteAltM] = useState<number | null>(null)
-  /** Height the route crosses at (may be above routeAltM, to clear buildings). */
-  const [routeCrossM, setRouteCrossM] = useState<number | null>(null)
+  /** The route being planned: its stops, in order. */
+  const [routeStops, setRouteStops] = useState<FlyToTarget[]>([])
+  /** The route being flown (state for rendering, ref for event handlers). */
+  const [routeRun, setRouteRun] = useState<RouteRun | null>(null)
+  const routeRunRef = useRef<RouteRun | null>(null)
+  const updateRun = useCallback((run: RouteRun | null) => {
+    routeRunRef.current = run
+    setRouteRun(run)
+  }, [])
+  /** Starts step i of the route being flown (set in an effect: it needs the command helpers). */
+  const runStepRef = useRef<(i: number) => void>(() => {})
   const [routeSafety, setRouteSafety] = useState<RouteSafety | null>(null)
   /** Battery level and minutes left (from the drain rate) while flying. */
   const [battery, setBattery] = useState<BatteryInfo | null>(null)
   const [checkResult, setCheckResult] = useState<{ key: string; info: RouteCheckInfo } | null>(null)
   /** Latest drone state, for commands that need the current position. */
   const stateRef = useRef<HudInfo['state'] | null>(null)
-  /** Planned route from the air, lower than the current height: descend once over the destination. */
-  const pendingDescent = useRef<{ dest: FlyToTarget; altM: number } | null>(null)
-  /** Descending over the destination to this height. */
-  const descendingTo = useRef<number | null>(null)
-  const startDescentRef = useRef<(d: { dest: FlyToTarget; altM: number }) => void>(() => {})
   /** The autopilot is flying a planned route (until landing or "Take over controls"). */
   const [autopilot, setAutopilot] = useState(false)
   const inAirRef = useRef(false)
-  /** A planned route waiting for the takeoff to reach height before flying to its destination. */
-  const pendingRoute = useRef<{ dest: FlyToTarget; altM: number } | null>(null)
-  const startRouteLegRef = useRef<(dest: FlyToTarget) => void>(() => {})
 
   useEffect(() => {
     if (!droneView) return
@@ -140,44 +162,36 @@ export function useDrone({ pickLocation }: Options = {}) {
       // Landed after a flight: back to the pre-flight choice.
       if (wasFlying && h && !flying) {
         setMission('choose')
-        setRouteDest(null)
-        setRoutePhase(null)
+        setRouteStops([])
+        updateRun(null)
         setAutopilot(false)
-        pendingRoute.current = null
-        pendingDescent.current = null
-        descendingTo.current = null
       }
       wasFlying = flying
-      // Planned route: once the takeoff has reached height, fly to the destination.
-      const route = pendingRoute.current
-      if (route && h?.state.inAir && h.state.relAltM >= route.altM - ROUTE_CLIMB_TOLERANCE_M) {
-        pendingRoute.current = null
-        setRoutePhase('flying')
-        startRouteLegRef.current(route.dest)
-      }
-      // Descending over the destination: done once at height.
-      const down = descendingTo.current
-      if (down !== null && h && h.state.relAltM <= down + ROUTE_CLIMB_TOLERANCE_M) {
-        descendingTo.current = null
-        setRoutePhase('arrived')
+      // Planned route: a take-off, climb or descent is done once at its height.
+      const run = routeRunRef.current
+      const step = run?.steps[run.i]
+      if (run && step && h) {
+        const rel = h.state.relAltM
+        const done =
+          step.kind === 'takeoff'
+            ? h.state.inAir && rel >= step.altM - ROUTE_HEIGHT_TOLERANCE_M
+            : step.kind === 'vertical' && Math.abs(rel - step.altM) <= ROUTE_HEIGHT_TOLERANCE_M
+        if (done) runStepRef.current(run.i + 1)
       }
     })
     const offTarget = droneView.onTargetChange((t) => {
       setTarget(t)
-      // Reached the destination: fly-to targets clear themselves on arrival. Only during the
-      // flying leg: other commands (e.g. the take-off) clear the target too.
-      if (t || routePhaseRef.current !== 'flying') return
-      const descent = pendingDescent.current
-      if (descent) {
-        pendingDescent.current = null
-        startDescentRef.current(descent)
-      } else setRoutePhase('arrived')
+      // Reached a stop: fly-to targets clear themselves on arrival. Only during a flying
+      // leg: other commands (e.g. the take-off) clear the target too.
+      const run = routeRunRef.current
+      if (t || run?.phase !== 'flying') return
+      runStepRef.current(run.i + 1)
     })
     return () => {
       offHud()
       offTarget()
     }
-  }, [droneView])
+  }, [droneView, updateRun])
 
   // Connect to the bridge (and keep reconnecting) for as long as the app is open.
   useEffect(() => {
@@ -223,13 +237,40 @@ export function useDrone({ pickLocation }: Options = {}) {
   )
 
   useEffect(() => {
-    startRouteLegRef.current = (dest) => void flyTo(dest.lat, dest.lon, dest.label)
-    startDescentRef.current = ({ dest, altM }) => {
-      descendingTo.current = altM
-      setRoutePhase('descending')
-      void px4Command('goto', { lat: dest.lat, lon: dest.lon, relAltM: altM })
+    runStepRef.current = (i) => {
+      const run = routeRunRef.current
+      if (!run) return
+      const fail = (ok: boolean) => {
+        if (ok || routeRunRef.current !== next) return
+        updateRun(null)
+        setAutopilot(false)
+      }
+      const step = run.steps[i]
+      if (!step) {
+        updateRun({ ...run, i, phase: 'arrived' })
+        return
+      }
+      const nextFly = run.steps.find((st, k) => k > i && st.kind === 'fly')
+      const s = stateRef.current
+      const phase: RoutePhase =
+        step.kind === 'fly' ? 'flying' : step.kind === 'vertical' && s && step.altM < s.relAltM ? 'descending' : 'climbing'
+      const next = { ...run, i, phase }
+      updateRun(next)
+      if (step.kind === 'fly') {
+        void flyTo(step.dest.lat, step.dest.lon, step.dest.label).then(fail)
+      } else if (step.kind === 'takeoff') {
+        void px4Command('takeoff', { altitudeM: step.altM }).then((ok) => {
+          fail(ok)
+          // Show where it's heading (the take-off command clears any fly-to target).
+          if (ok && nextFly?.kind === 'fly') droneView?.setTarget(nextFly.dest)
+        })
+      } else {
+        if (nextFly?.kind === 'fly') droneView?.setTarget(nextFly.dest)
+        const at = step.atStart && s ? s : step
+        void px4Command('goto', { lat: at.lat, lon: at.lon, relAltM: step.altM }).then(fail)
+      }
     }
-  }, [flyTo, px4Command])
+  }, [flyTo, px4Command, droneView, updateRun])
 
   // Building data for route checks.
   useEffect(() => {
@@ -242,22 +283,23 @@ export function useDrone({ pickLocation }: Options = {}) {
     }
   }, [])
 
-  // While planning a route: the buildings between the drone and the destination.
-  // Rechecked when the destination changes or the drone moves ~100 m.
-  const planning = mission === 'route' && !autopilot && routeDest !== null
+  // While planning a route: the buildings along each leg.
+  // Rechecked when the stops change or the drone moves ~100 m.
+  const planning = mission === 'route' && !autopilot && routeStops.length > 0
   const posKey = hud ? `${hud.state.lat.toFixed(3)},${hud.state.lon.toFixed(3)}` : null
-  const checkKey = planning && routeDest && posKey && routeSafety ? `${routeDest.lat},${routeDest.lon}|${posKey}` : null
+  const stopsKey = routeStops.map((st) => `${st.lat},${st.lon}`).join(';')
+  const checkKey = planning && posKey && routeSafety ? `${stopsKey}|${posKey}` : null
   useEffect(() => {
     const s = stateRef.current
-    if (!checkKey || !routeSafety || !routeDest || !s) return
+    if (!checkKey || !routeSafety || !routeStops.length || !s) return
     let cancelled = false
-    checkRoute(routeSafety, s, routeDest)
+    checkRoute(routeSafety, s, routeStops)
       .then((info) => !cancelled && setCheckResult({ key: checkKey, info }))
       .catch(() => !cancelled && setCheckResult({ key: checkKey, info: { status: 'error' } }))
     return () => {
       cancelled = true
     }
-  }, [checkKey, routeSafety, routeDest])
+  }, [checkKey, routeSafety, routeStops])
   // Return home: PX4 climbs to its return height and flies straight home, not knowing about
   // buildings. Keep that height clear of the buildings between the drone and home, rechecked
   // every ~10 m the drone moves (left alone during a return, which has already started).
@@ -297,16 +339,41 @@ export function useDrone({ pickLocation }: Options = {}) {
       ? checkResult.info
       : { status: 'checking' }
 
-  // While planning a route: show it in grey along the path it will fly (blue once it's flown).
-  // The route preview uses the planner's height and, once known, the route check's safe height.
+  // While planning: the steps it would fly (from the planner's height and, once known, each
+  // leg's safe height), how far and how long that is, and a grey preview on the map. In
+  // flight: the same for what's left.
   const [planAltM, setPlanAltM] = useState(30)
-  const minSafeM = routeCheck?.status === 'done' ? routeCheck.minSafeRelAltM : 0
-  const planInAirM = hud?.state.inAir ? hud.state.relAltM : null
-  const previewCrossM = Math.round(crossingAltM(planAltM, planInAirM, minSafeM))
+  const start: RouteStart | null = hud
+    ? { lat: hud.state.lat, lon: hud.state.lon, relAltM: hud.state.relAltM, inAir: hud.state.inAir }
+    : null
+  const legMinSafeM = routeCheck?.status === 'done' ? routeCheck.legMinSafeM : routeStops.map(() => 0)
+  const planSteps = planning && start ? routeSteps(start, routeStops, legMinSafeM, planAltM) : null
+  const routeEstimate = planSteps && start ? estimateRoute(start, planSteps) : null
+  const preview = planSteps
+    ? planPreview(routeStops, planSteps)
+    : autopilot && routeRun
+      ? remainingPreview(routeRun.stops, routeRun.steps, routeRun.i)
+      : null
+  const previewKey = JSON.stringify(preview)
   useEffect(() => {
-    const show = mission === 'route' && !autopilot && routeDest
-    droneView?.setPreview(show ? { dest: routeDest, crossRelM: previewCrossM, endRelM: planAltM } : null)
-  }, [droneView, mission, autopilot, routeDest, previewCrossM, planAltM])
+    droneView?.setPreview(previewKey === 'null' ? null : (JSON.parse(previewKey) as RoutePreview))
+  }, [droneView, previewKey])
+
+  let routeProgress: RouteProgress | null = null
+  if (autopilot && routeRun) {
+    const { steps, stops, i, phase } = routeRun
+    const stopIndex = stepStop(steps, Math.max(0, i), stops.length)
+    const step = steps[i]
+    routeProgress = {
+      phase,
+      stopIndex,
+      stopCount: stops.length,
+      stopLabel: stops[stopIndex]?.label ?? 'the destination',
+      heightM: step ? step.altM : routeRun.altM,
+      remaining: step && start ? estimateRoute(start, steps.slice(i)) : null,
+      finalDescent: phase === 'descending' && !steps.some((st, k) => k > i && st.kind === 'fly'),
+    }
+  }
 
   // --- pre-flight -----------------------------------------------------------
 
@@ -319,37 +386,51 @@ export function useDrone({ pickLocation }: Options = {}) {
   /** Back out of Plan a route: to the pre-flight choice, or (in the air) to the manual controls. */
   const backToChoose = useCallback(() => {
     setMission(inAirRef.current ? 'free' : 'choose')
-    setRouteDest(null)
+    setRouteStops([])
   }, [])
 
-  const pickRouteDest = useCallback(async () => {
+  const addStop = useCallback((stop: FlyToTarget) => {
+    setRouteStops((stops) => (stops.length < ROUTE_MAX_STOPS ? [...stops, stop] : stops))
+  }, [])
+
+  const pickRouteStop = useCallback(async () => {
     if (!pickLocation) return
     setPicking(true)
     const point = await pickLocation()
     setPicking(false)
-    if (point) setRouteDest({ lat: point.lat, lon: point.lon, label: 'Map point' })
-  }, [pickLocation])
+    if (point) addStop({ lat: point.lat, lon: point.lon, label: 'Map point' })
+  }, [pickLocation, addStop])
 
-  /** Plan a route: a place chosen in the route's search box becomes the destination. */
-  const routeToPlace = useCallback((place: Place) => {
-    const { lat, lon } = centreOf(place.target)
-    setRouteDest({ lat, lon, label: place.title })
-  }, [])
+  /** Plan a route: a place chosen in the route's search box is added as the next stop. */
+  const routeToPlace = useCallback(
+    (place: Place) => {
+      const { lat, lon } = centreOf(place.target)
+      addStop({ lat, lon, label: place.title })
+    },
+    [addStop],
+  )
+
+  const removeStop = useCallback((i: number) => setRouteStops((stops) => stops.filter((_, k) => k !== i)), [])
+  /** Move stop i one place earlier. */
+  const moveStopUp = useCallback(
+    (i: number) =>
+      setRouteStops((stops) => (i < 1 ? stops : [...stops.slice(0, i - 1), stops[i], stops[i - 1], ...stops.slice(i + 1)])),
+    [],
+  )
 
   /**
-   * Planned route on autopilot, ending at `altM` above home. Height changes happen straight
-   * up or down, never on the way: climb (or take off) to the crossing height, which clears
-   * every building on the route, fly across, then descend to `altM` over the destination.
+   * Planned route on autopilot, ending at `altM` above home over the last stop. Height
+   * changes happen straight up or down, never on the way (see routePlan.ts): each leg is
+   * flown at a height that clears every building on it.
    */
   const startRoute = useCallback(
     async (altM: number) => {
       const s = stateRef.current
-      if (!routeDest || !s) return
-      const inAir = inAirRef.current
+      if (!routeStops.length || !s) return
       // Recheck from exactly where the drone is now.
-      let crossM = crossingAltM(altM, inAir ? s.relAltM : null, 0)
+      let legMinSafe = routeStops.map(() => 0)
       if (routeSafety) {
-        const check = await checkRoute(routeSafety, s, routeDest).catch(() => null)
+        const check = await checkRoute(routeSafety, s, routeStops).catch(() => null)
         if (check?.status === 'done') {
           const problem = routeProblem(check, altM)
           if (problem) {
@@ -360,52 +441,26 @@ export function useDrone({ pickLocation }: Options = {}) {
             )
             return
           }
-          crossM = crossingAltM(altM, inAir ? s.relAltM : null, check.minSafeRelAltM)
+          legMinSafe = check.legMinSafeM
         }
       }
-      const fail = () => {
-        pendingRoute.current = null
-        pendingDescent.current = null
-        setRoutePhase(null)
-        setAutopilot(false)
-      }
+      const start = { lat: s.lat, lon: s.lon, relAltM: s.relAltM, inAir: inAirRef.current }
+      const steps = routeSteps(start, routeStops, legMinSafe, altM)
       setAutopilot(true)
-      setRouteAltM(altM)
-      setRouteCrossM(crossM)
-      if (altM < crossM - ROUTE_CLIMB_TOLERANCE_M) pendingDescent.current = { dest: routeDest, altM }
-      if (inAir) {
-        if (crossM > s.relAltM + ROUTE_CLIMB_TOLERANCE_M) {
-          pendingRoute.current = { dest: routeDest, altM: crossM }
-          setRoutePhase('climbing')
-          droneView?.setTarget(routeDest)
-          if (!(await px4Command('goto', { lat: s.lat, lon: s.lon, relAltM: crossM }))) fail()
-          return
-        }
-        setRoutePhase('flying')
-        if (!(await flyTo(routeDest.lat, routeDest.lon, routeDest.label))) fail()
-        return
-      }
-      pendingRoute.current = { dest: routeDest, altM: crossM }
-      setRoutePhase('climbing')
-      if (await px4Command('takeoff', { altitudeM: crossM })) droneView?.setTarget(routeDest)
-      else fail()
+      updateRun({ steps, i: -1, stops: routeStops, altM, phase: 'climbing' })
+      runStepRef.current(0)
     },
-    [routeDest, routeSafety, px4Command, droneView, flyTo],
+    [routeStops, routeSafety, updateRun],
   )
 
   /** Leave the autopilot: the drone holds where it is and the manual controls take over. */
   const takeOver = useCallback(() => {
-    pendingRoute.current = null
-    pendingDescent.current = null
-    descendingTo.current = null
-    setRoutePhase(null)
+    updateRun(null)
     setAutopilot(false)
     setMission('free')
     droneView?.setTarget(null)
     void px4Command('hold')
-  }, [droneView, px4Command])
-
-
+  }, [droneView, px4Command, updateRun])
 
   // Keyboard flying, enabled while PX4 is connected and the drone is airborne.
   const droneViewRef = useRef(droneView)
@@ -438,14 +493,12 @@ export function useDrone({ pickLocation }: Options = {}) {
   const onBuildingHit = useCallback(
     (site: CrashSite) => {
       keyboardRef.current?.interrupt()
-      pendingRoute.current = null
-      pendingDescent.current = null
-      descendingTo.current = null
+      updateRun(null)
       droneView?.crash(site)
       setCrashed(true)
       void px4Command('crash')
     },
-    [droneView, px4Command],
+    [droneView, px4Command, updateRun],
   )
   const collision = useCollisions(px4, onBuildingHit, !crashed)
 
@@ -455,10 +508,10 @@ export function useDrone({ pickLocation }: Options = {}) {
     droneView?.clearCrash()
     setCrashed(false)
     setMission('choose')
-    setRouteDest(null)
-    setRoutePhase(null)
+    setRouteStops([])
+    updateRun(null)
     setAutopilot(false)
-  }, [px4Command, droneView])
+  }, [px4Command, droneView, updateRun])
 
   return {
     /** Drone state for the 3D view (CesiumViewer prop). */
@@ -487,14 +540,14 @@ export function useDrone({ pickLocation }: Options = {}) {
         onFreeFly: () => void freeFly(),
         onPlanRoute: () => setMission('route'),
         onBack: backToChoose,
-        routeDest,
-        onPickRouteDest: () => void pickRouteDest(),
-        onClearRouteDest: () => setRouteDest(null),
+        routeStops,
+        onPickRouteStop: () => void pickRouteStop(),
+        onRemoveStop: removeStop,
+        onMoveStopUp: moveStopUp,
         onPlanAltM: setPlanAltM,
         onStartRoute: (altM: number) => void startRoute(altM),
-        routePhase,
-        routeAltM,
-        routeCrossM,
+        routeEstimate,
+        routeProgress,
         routeCheck,
         overBuilding: collision.below,
         returnPlan,
@@ -516,16 +569,20 @@ export function useDrone({ pickLocation }: Options = {}) {
   }
 }
 
-/** Buildings between the drone and the destination, as the panel shows them. */
-async function checkRoute(safety: RouteSafety, s: HudInfo['state'], dest: FlyToTarget): Promise<RouteCheckInfo> {
+/** Buildings along each leg of the route (drone → first stop → … → last stop), as the panel shows them. */
+async function checkRoute(safety: RouteSafety, s: HudInfo['state'], stops: FlyToTarget[]): Promise<RouteCheckInfo> {
   const homeAmslM = s.home?.altAmslM ?? s.altAmslM - s.relAltM
-  const r = await safety.check({ lat: s.lat, lon: s.lon }, dest, homeAmslM)
+  const points = [{ lat: s.lat, lon: s.lon }, ...stops]
+  const legs = await Promise.all(stops.map((stop, i) => safety.check(points[i], stop, homeAmslM)))
+  const worst = legs.reduce((w, r) => (r.minSafeRelAltM > w.minSafeRelAltM ? r : w), legs[0])
+  const last = legs[legs.length - 1]
   return {
     status: 'done',
-    minSafeRelAltM: r.minSafeRelAltM,
-    highest: describe(r.highest),
-    destMinSafeRelAltM: r.destMinSafeRelAltM,
-    destHighest: describe(r.destHighest),
+    minSafeRelAltM: worst.minSafeRelAltM,
+    highest: describe(worst.highest),
+    destMinSafeRelAltM: last.destMinSafeRelAltM,
+    destHighest: describe(last.destHighest),
+    legMinSafeM: legs.map((r) => r.minSafeRelAltM),
   }
 }
 
