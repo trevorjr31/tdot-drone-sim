@@ -97,6 +97,14 @@ export function estimateRoute(start: RouteStart, steps: RouteStep[]): RouteEstim
   return { distanceM: distance, climbM: climb, timeS: time }
 }
 
+/**
+ * A place with no name or address: its coordinates, to about 10 m ("43.6526, -79.3833"),
+ * short enough for a stop's row in the panel. It's only the label: the stop keeps the exact point.
+ */
+export function formatLatLon(lat: number, lon: number): string {
+  return `${lat.toFixed(4)}, ${lon.toFixed(4)}`
+}
+
 /** "850 m", "2.4 km". */
 export function formatDistance(m: number): string {
   return m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1)} km`
@@ -117,7 +125,9 @@ function stepPoint(step: RouteStep): PreviewPoint {
 }
 
 function stopLabel(stops: FlyToTarget[], i: number): string {
-  return stops.length > 1 ? `${i + 1}. ${stops[i].label}` : `Destination: ${stops[i].label}`
+  const s = stops[i]
+  const name = s.building ? `${s.label} (building, ${s.building.heightM} m)` : s.label
+  return stops.length > 1 ? `${i + 1}. ${name}` : `Destination: ${name}`
 }
 
 /** The whole route, from the drone, while it's being planned. */

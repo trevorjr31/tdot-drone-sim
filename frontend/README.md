@@ -76,7 +76,9 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
 - **Before a flight** the panel shows two choices (the connection status is always visible
   in its header, even when collapsed):
   - **Free fly**: takes off straight away (to 30 m) and goes to the controls.
-  - **Plan a route**: choose a destination (*Pick on map*, or search for a place); add
+  - **Plan a route**: choose a destination (*Pick on map*, or search for a place; a point
+    picked on the map is named after the building there, with a "Building · height" tag, or
+    shown as its coordinates if there's no building or it has no name or address); add
     more stops the same way (up to 8) to visit them in order, reorder them with ↑ or
     remove them with ×. Set the **height** to arrive at and **Take off**. The panel shows
     the route's **distance and flight time** (estimated at PX4's speeds, as measured in the

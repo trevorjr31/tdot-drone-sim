@@ -6,7 +6,7 @@
  * insist on a height that clears it.
  */
 import type { FeatureCollection, MassingIndex, MassingProps } from '../data/torontoData'
-import { buildingsFromTile, footprintContains, type Building } from './collision'
+import { buildingName, buildingsFromTile, footprintContains, type Building } from './collision'
 
 /** Half-width of the strip checked either side of the straight line, metres. */
 export const ROUTE_CORRIDOR_M = 15
@@ -145,6 +145,14 @@ export class RouteSafety {
     const destHighest = highestOnRoute(all, to, to)
     const safe = (b: Building | null) => (b ? Math.max(0, Math.ceil(b.roofM - homeAmslM + ROUTE_CLEARANCE_M)) : 0)
     return { highest, minSafeRelAltM: safe(highest), destHighest, destMinSafeRelAltM: safe(destHighest) }
+  }
+
+  /** The building at a point (the tallest, if footprints overlap): its name or address, if any, and height. */
+  async buildingAt(at: LatLon): Promise<{ name: string | null; heightM: number } | null> {
+    const sets = await Promise.all(tilesOnRoute(this.index, at, at, 0).map((k) => this.tile(k)))
+    const here = sets.flat().filter((b) => footprintContains(b, at.lon, at.lat))
+    const tallest = here.reduce<Building | null>((t, b) => (!t || b.roofM > t.roofM ? b : t), null)
+    return tallest ? { name: buildingName(tallest), heightM: Math.round(tallest.roofM - tallest.groundM) } : null
   }
 
   private tile(key: string): Promise<Building[]> {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { estimateRoute, formatDistance, formatDuration, legCrossings, routeSteps, type RouteStart } from './routePlan'
+import { estimateRoute, formatDistance, formatDuration, formatLatLon, legCrossings, routeSteps, type RouteStart } from './routePlan'
 
 const ground: RouteStart = { lat: 43.65, lon: -79.38, relAltM: 0, inAir: false }
 // About 800 m east, then 800 m north of that.
@@ -53,6 +53,7 @@ describe('formatting', () => {
     expect(formatDuration(42)).toBe('40 s')
     expect(formatDuration(370)).toBe('6 min')
     expect(formatDuration(4200)).toBe('1 h 10 min')
+    expect(formatLatLon(43.652551, -79.3833)).toBe('43.6526, -79.3833')
   })
 })
 

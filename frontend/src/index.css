@@ -930,6 +930,19 @@ body,
   min-width: 0;
 }
 
+/* A stop's name, with "Building · 30 m" under it when it's on a building. */
+.drone-panel__stop-name {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.drone-panel__stop-tag {
+  color: var(--panel-muted);
+  font-size: 11px;
+}
+
 /* Route stops: numbered rows, one per stop. */
 .drone-panel__stops {
   display: flex;
@@ -941,8 +954,13 @@ body,
 }
 
 .drone-panel__stops .drone-panel__dest {
-  gap: 6px;
-  padding: 4px 6px 4px 8px;
+  gap: 4px;
+  padding: 4px 4px 4px 6px;
+}
+
+/* Narrow ↑ and × buttons, so a stop's name (often coordinates) fits. */
+.drone-panel__stops .btn--small {
+  padding: 4px 7px;
 }
 
 .drone-panel__stop-num {

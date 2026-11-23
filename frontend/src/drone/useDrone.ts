@@ -11,6 +11,7 @@ import { buildingName, type Building } from './collision'
 import { RouteSafety } from './routeSafety'
 import {
   estimateRoute,
+  formatLatLon,
   planPreview,
   remainingPreview,
   ROUTE_HEIGHT_TOLERANCE_M,
@@ -398,8 +399,16 @@ export function useDrone({ pickLocation }: Options = {}) {
     setPicking(true)
     const point = await pickLocation()
     setPicking(false)
-    if (point) addStop({ lat: point.lat, lon: point.lon, label: 'Map point' })
-  }, [pickLocation, addStop])
+    if (!point) return
+    // Named after the building there (its name or address), else its coordinates.
+    const building = await routeSafety?.buildingAt(point).catch(() => null)
+    addStop({
+      lat: point.lat,
+      lon: point.lon,
+      label: building?.name ?? formatLatLon(point.lat, point.lon),
+      ...(building && { building: { heightM: building.heightM } }),
+    })
+  }, [pickLocation, addStop, routeSafety])
 
   /** Plan a route: a place chosen in the route's search box is added as the next stop. */
   const routeToPlace = useCallback(

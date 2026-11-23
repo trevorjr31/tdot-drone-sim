@@ -41,7 +41,13 @@ const POSE_REUSE_MS = 5
 /** Local frame with x = north (forward at heading 0), y = west, z = up. */
 const NORTH_WEST_UP = Transforms.localFrameToFixedFrameGenerator('north', 'west')
 
-export type FlyToTarget = { lat: number; lon: number; label: string }
+export type FlyToTarget = {
+  lat: number
+  lon: number
+  label: string
+  /** The place is on a building (picked on the map): its height, metres. */
+  building?: { heightM: number }
+}
 
 /** A point on a planned route's path, metres above home; `atDrone` points sit over the drone. */
 export type PreviewPoint = { lat: number; lon: number; relAltM: number } | { atDrone: true; relAltM: number }

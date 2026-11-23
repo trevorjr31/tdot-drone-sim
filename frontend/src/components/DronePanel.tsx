@@ -209,8 +209,9 @@ function RoutePlanner(
           {p.routeStops.map((stop, i) => (
             <li key={`${i}:${stop.lat},${stop.lon}`} className="drone-panel__dest">
               {p.routeStops.length > 1 && <span className="drone-panel__stop-num">{i + 1}</span>}
-              <span className="btn__ellipsis" title={stop.label}>
-                {stop.label}
+              <span className="drone-panel__stop-name" title={stop.label}>
+                <span className="btn__ellipsis">{stop.label}</span>
+                {stop.building && <span className="drone-panel__stop-tag">Building · {stop.building.heightM} m</span>}
               </span>
               {i > 0 && (
                 <button type="button" className="btn btn--small" onClick={() => p.onMoveStopUp(i)} aria-label={`Move ${stop.label} earlier`} title="Move earlier">
@@ -253,7 +254,7 @@ function RoutePlanner(
             m above {p.airborne ? 'home' : 'the launch point'}
           </label>
           <RouteCheck check={p.routeCheck} altM={altM} currentAltM={p.currentAltM} onUse={setAltM} stops={p.routeStops.length} />
-          <RouteSummary estimate={p.routeEstimate} battery={p.battery} stops={p.routeStops.length} />
+          {!tooHigh(p.routeCheck) && <RouteSummary estimate={p.routeEstimate} battery={p.battery} stops={p.routeStops.length} />}
           <button
             type="button"
             className="btn btn--primary btn--block"
@@ -431,6 +432,11 @@ function ReturnWarning({ plan }: { plan: ReturnPlan | null }) {
       home, too tall to clear under {RETURN_MAX_ALT_M} m. Move away from it before Return (or a geofence return).
     </div>
   )
+}
+
+/** The route can't be flown at any height under the ceiling (no point estimating it). */
+function tooHigh(c: RouteCheckInfo | null): boolean {
+  return c?.status === 'done' && c.minSafeRelAltM > ROUTE_MAX_ALT_M
 }
 
 /** Whether the route's height is unsafe (or still being checked). */
