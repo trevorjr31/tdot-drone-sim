@@ -102,12 +102,16 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   **Land** over a building asks first: PX4 lands straight down and doesn't know the
   building is there, so the drone would crash onto the roof. *Return home* is offered
   instead.
+  **Battery**: the panel warns when it's low (25%: head home), critical (15%: PX4 is
+  flying home) and empty (5%: PX4 is landing where it is), with the minutes until PX4
+  acts (see "Battery" in the top-level README).
 - **Camera**: always a chase camera on the drone. It starts behind and above it and swings
   round to stay behind as it turns; **drag** to rotate around the drone, **scroll** to zoom
   (3 m to 30 km), straight through any building in the way. Your angle and zoom are kept as it flies. There's no free camera or Home
   button for now.
 - **HUD** (bottom-right): height above whatever is below (ground or roof), altitude above
-  sea level, speed, climb, heading, distance from home, battery, flight mode, armed state,
+  sea level, speed, climb, heading, distance from home, battery (with minutes of flight
+  left, once it can tell), flight mode, armed state,
   and a warning above Transport Canada's 122 m (400 ft) limit. **Settings → Flight
   readouts** hides it (remembered in this browser); crash, collision and height-limit
   warnings still appear.

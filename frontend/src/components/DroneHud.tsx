@@ -1,3 +1,4 @@
+import type { BatteryInfo } from '../drone/battery'
 import type { HudInfo } from '../drone/droneView'
 import type { CollisionInfo } from '../drone/useCollisions'
 
@@ -17,10 +18,13 @@ function cardinal(deg: number) {
 export function DroneHud({
   info,
   collision,
+  battery: batteryInfo = null,
   showReadouts = true,
 }: {
   info: HudInfo | null
   collision?: CollisionInfo
+  /** Battery level and minutes left (until PX4 lands where it is), while flying. */
+  battery?: BatteryInfo | null
   showReadouts?: boolean
 }) {
   if (!info) return null
@@ -51,7 +55,13 @@ export function DroneHud({
             <Readout label="Climb" value={`${climb > 0 ? '+' : ''}${climb.toFixed(1)}`} unit="m/s" />
             <Readout label="Heading" value={`${state.headingDeg.toFixed(0)}°`} unit={cardinal(state.headingDeg)} />
             <Readout label="Home" value={distanceFromHomeM < 1000 ? distanceFromHomeM.toFixed(0) : (distanceFromHomeM / 1000).toFixed(2)} unit={distanceFromHomeM < 1000 ? 'm' : 'km'} />
-            <Readout label="Battery" value={`${battery}`} unit="%" warn={battery < 20} />
+            <Readout
+              label="Battery"
+              value={`${battery}`}
+              unit={batteryInfo?.minToLand != null ? `% · ${Math.round(batteryInfo.minToLand)} min` : '%'}
+              warn={batteryInfo ? batteryInfo.level === 'critical' || batteryInfo.level === 'emergency' : battery < 15}
+              caution={batteryInfo?.level === 'low'}
+            />
             <Readout
               label="Building"
               value={nearest === null ? '—' : nearest < 0.5 ? '0' : nearest.toFixed(0)}

@@ -45,6 +45,8 @@ services:
       MAVLINK_URL: udpin://0.0.0.0:14540
       FENCE_FILE: /data/boundary-fence.geojson
       FENCE_CEILING_M: "120"
+      # Simulated battery: minutes of flight from full to empty.
+      BATTERY_FLIGHT_MIN: "20"
       WS_PORT: "8765"
       STATE_RATE_HZ: "20"
     restart: unless-stopped

@@ -36,6 +36,11 @@ it return lower near home) and sets a high default (RETURN_ALT_DEFAULT_M); while
 is open it sends "returnAlt" with a height that clears the buildings between the drone
 and home (it has the City building data). Unlike other commands, "returnAlt" doesn't
 interrupt keyboard flying.
+
+Battery: PX4's simulated battery drains steadily while armed and refills on disarm. By
+default it stops at 50%, so the bridge sets a full drain over BATTERY_FLIGHT_MIN minutes
+down to 0%, and PX4's low-battery responses: a warning at 25%, Return at 15%, and
+landing where it is at 5% (BATTERY_*_THR; the app's warnings use the same levels).
 """
 
 import asyncio
@@ -75,6 +80,14 @@ PX4_MAX_FENCE_POINTS = 63  # PX4 dataman holds 64 fence entries (one is bookkeep
 RETURN_ALT_MAX_M = FENCE_CEILING_M - 5
 RETURN_ALT_MIN_M = 20.0
 RETURN_ALT_DEFAULT_M = RETURN_ALT_MAX_M  # until the app sends a building-aware height
+# Simulated battery: minutes from full to empty while armed (PX4's default stops at 50%).
+BATTERY_FLIGHT_MIN = float(os.environ.get("BATTERY_FLIGHT_MIN", "20"))
+# PX4's responses (frontend: BATTERY_* in src/drone/battery.ts): warn, Return home, land where it is.
+BATTERY_LOW_THR = 0.25
+BATTERY_CRIT_THR = 0.15
+BATTERY_EMERGENCY_THR = 0.05
+# COM_LOW_BAT_ACT: Return at the critical level, land at the emergency level.
+LOW_BATTERY_ACTION_RETURN_THEN_LAND = 3
 # Flight-mode telemetry lags a mode switch; ignore "not offboard" reports this soon after starting.
 OFFBOARD_MODE_GRACE_S = 1.5
 
@@ -202,6 +215,7 @@ class Bridge:
         log.info("PX4 connected (version %s)", self.px4_version)
         asyncio.create_task(self.upload_geofence())
         asyncio.create_task(self.setup_return())
+        asyncio.create_task(self.setup_battery())
         t = self.drone.telemetry
         for setter in (t.set_rate_position, t.set_rate_attitude_euler, t.set_rate_velocity_ned):
             try:
@@ -250,6 +264,23 @@ class Bridge:
             log.info("Return home: cone off, %.0f m until the app sends a building-aware height", RETURN_ALT_DEFAULT_M)
         except Exception as e:  # noqa: BLE001
             log.warning("Could not set up Return home: %s", e)
+
+    async def setup_battery(self) -> None:
+        """A simulated battery that runs out, and PX4's responses with time to get home."""
+        p = self.drone.param
+        try:
+            await p.set_param_float("SIM_BAT_DRAIN", BATTERY_FLIGHT_MIN * 60)
+            await p.set_param_float("SIM_BAT_MIN_PCT", 0.0)
+            await p.set_param_float("BAT_LOW_THR", BATTERY_LOW_THR)
+            await p.set_param_float("BAT_CRIT_THR", BATTERY_CRIT_THR)
+            await p.set_param_float("BAT_EMERGEN_THR", BATTERY_EMERGENCY_THR)
+            await p.set_param_int("COM_LOW_BAT_ACT", LOW_BATTERY_ACTION_RETURN_THEN_LAND)
+            log.info(
+                "Battery: %.0f min flight; warn %.0f%%, Return %.0f%%, land %.0f%%",
+                BATTERY_FLIGHT_MIN, BATTERY_LOW_THR * 100, BATTERY_CRIT_THR * 100, BATTERY_EMERGENCY_THR * 100,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("Could not set up the battery: %s", e)
 
     async def set_return_alt(self, rel_alt_m: float) -> None:
         alt = round(max(RETURN_ALT_MIN_M, min(RETURN_ALT_MAX_M, rel_alt_m)), 1)

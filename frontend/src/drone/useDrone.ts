@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { centreOf, type MapApi, type Place } from '../places/types'
 import type { DroneView, FlyToTarget, HudInfo } from './droneView'
+import { BatteryEstimator, type BatteryInfo } from './battery'
 import { KeyboardFlight } from './keyboardFlight'
 import { Px4BridgeSource, type BridgeStatus, type Px4Command, type Px4CommandParams } from './px4Bridge'
 import type { CrashSite } from './crash'
@@ -108,6 +109,8 @@ export function useDrone({ pickLocation }: Options = {}) {
   /** Height the route crosses at (may be above routeAltM, to clear buildings). */
   const [routeCrossM, setRouteCrossM] = useState<number | null>(null)
   const [routeSafety, setRouteSafety] = useState<RouteSafety | null>(null)
+  /** Battery level and minutes left (from the drain rate) while flying. */
+  const [battery, setBattery] = useState<BatteryInfo | null>(null)
   const [checkResult, setCheckResult] = useState<{ key: string; info: RouteCheckInfo } | null>(null)
   /** Latest drone state, for commands that need the current position. */
   const stateRef = useRef<HudInfo['state'] | null>(null)
@@ -126,8 +129,11 @@ export function useDrone({ pickLocation }: Options = {}) {
   useEffect(() => {
     if (!droneView) return
     let wasFlying = false
+    const batteryEstimator = new BatteryEstimator()
     const offHud = droneView.onHud((h) => {
       setHud(h)
+      const b = h ? batteryEstimator.update(h.state.timeMs, h.state.battery, h.state.armed) : null
+      setBattery((prev) => (sameBattery(prev, b) ? prev : b))
       const flying = !!h && (h.state.armed || h.state.inAir)
       inAirRef.current = !!h?.state.inAir
       stateRef.current = h?.state ?? null
@@ -492,6 +498,7 @@ export function useDrone({ pickLocation }: Options = {}) {
         routeCheck,
         overBuilding: collision.below,
         returnPlan,
+        battery,
         autopilot,
         onTakeOver: takeOver,
       },
@@ -502,6 +509,7 @@ export function useDrone({ pickLocation }: Options = {}) {
     trailVisible,
     /** Return home's building-aware height (for Settings). */
     returnPlan,
+    battery,
     setTrailVisible,
     /** For the route planner's search box. */
     routeToPlace,
@@ -523,4 +531,11 @@ async function checkRoute(safety: RouteSafety, s: HudInfo['state'], dest: FlyToT
 
 function describe(b: Building | null) {
   return b ? { name: buildingName(b), heightM: Math.round(b.roofM - b.groundM) } : null
+}
+
+/** Same level and the same whole minutes left: no re-render needed. */
+function sameBattery(a: BatteryInfo | null, b: BatteryInfo | null): boolean {
+  if (!a || !b) return a === b
+  const m = (x: number | null) => (x === null ? null : Math.round(x * 2))
+  return a.level === b.level && m(a.minToReturn) === m(b.minToReturn) && m(a.minToLand) === m(b.minToLand)
 }

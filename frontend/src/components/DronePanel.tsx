@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
+import { BATTERY_CRITICAL, BATTERY_EMERGENCY, formatMinutes, type BatteryInfo } from '../drone/battery'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
 import {
   crossingAltM,
@@ -53,6 +54,8 @@ type Props = {
     overBuilding: { name: string | null; heightM: number } | null
     /** Return home's height, kept clear of buildings; `safe` false when no straight return clears them. */
     returnPlan: ReturnPlan | null
+    /** Battery level and minutes left, while flying. */
+    battery: BatteryInfo | null
     /** The autopilot is flying a planned route. */
     autopilot: boolean
     onTakeOver: () => void
@@ -270,6 +273,7 @@ function FlightControls(p: Props['px4']) {
         </button>
       </div>
 
+      <BatteryWarning battery={p.battery} />
       <ReturnWarning plan={p.returnPlan} />
 
       {below && (
@@ -351,12 +355,38 @@ function Autopilot(p: Props['px4']) {
       <div className="drone-panel__flying">
         <span>{status}</span>
       </div>
+      <BatteryWarning battery={p.battery} />
       <ReturnWarning plan={p.returnPlan} />
       <button type="button" className="btn btn--primary btn--block" onClick={p.onTakeOver} disabled={p.busy === 'hold'}>
         Take over controls
       </button>
       <div className="drone-panel__hint">Stops the autopilot (the drone holds where it is) and gives you the controls.</div>
     </>
+  )
+}
+
+/** Low battery: what PX4 will do (or is doing) about it, and how long until it does. */
+function BatteryWarning({ battery: b }: { battery: BatteryInfo | null }) {
+  if (!b || b.level === 'ok') return null
+  const pct = (x: number) => `${Math.round(x * 100)}%`
+  if (b.level === 'emergency')
+    return (
+      <div className="drone-panel__check is-bad" role="alert">
+        <strong>Battery empty:</strong> PX4 is landing where it is.
+      </div>
+    )
+  if (b.level === 'critical')
+    return (
+      <div className="drone-panel__check is-bad" role="alert">
+        <strong>Battery critical:</strong> PX4 is flying home.{' '}
+        {b.minToLand !== null && <>At {pct(BATTERY_EMERGENCY)} ({formatMinutes(b.minToLand)}) it lands wherever it is.</>}
+      </div>
+    )
+  return (
+    <div className="drone-panel__check is-warn" role="alert">
+      <strong>Battery low:</strong> head home soon. At {pct(BATTERY_CRITICAL)}
+      {b.minToReturn !== null && <> ({formatMinutes(b.minToReturn)})</>} PX4 flies home on its own.
+    </div>
   )
 }
 

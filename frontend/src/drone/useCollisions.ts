@@ -77,7 +77,10 @@ export function useCollisions(source: DroneSource, onHit: (site: CrashSite) => v
       const before = previous
       previous = s
       if (!collider || !enabledRef.current) {
+        // Paused (crashed): drop the warning so it isn't still up after the reset.
+        if (colliding) window.clearTimeout(lingerTimer)
         colliding = false
+        setInfo((i) => (i.colliding || i.warning ? { ...i, colliding: false, warning: false } : i))
         return
       }
       collider.setPosition(s.lon, s.lat)

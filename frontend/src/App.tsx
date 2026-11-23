@@ -114,7 +114,7 @@ function App() {
           (OGL – Toronto)
         </p>
       </SettingsMenu>
-      <DroneHud info={drone.hud} collision={drone.collision} showReadouts={hudVisible} />
+      <DroneHud info={drone.hud} collision={drone.collision} battery={drone.battery} showReadouts={hudVisible} />
       {tilesStatus?.state === 'loading' && <div className="banner banner-info">Loading 3D Toronto…</div>}
       {tilesStatus?.state === 'error' && (
         <div className="banner">

@@ -84,6 +84,18 @@ If PX4 takes over while you're flying with the keyboard (geofence, failsafe), th
 won't take control back until the keys are released, since re-entering offboard would
 count as a pilot takeover and cancel PX4's failsafe.
 
+### Battery
+
+PX4's simulated battery drains steadily while armed and refills when the drone disarms.
+Out of the box it stops at 50%, so it never runs out; the bridge sets it to last 20 minutes
+from full to empty (`BATTERY_FLIGHT_MIN` in `docker-compose.yml`) and sets PX4's responses
+with time to act on them: a warning at 25%, **Return home** at 15%, and **landing where it
+is** at 5% (over a building that means onto the roof, which the app counts as a crash).
+PX4 does all of this itself, app or no app. The app shows the minutes left in the HUD
+(estimated from how fast the battery is dropping) and warns in the drone panel at each
+level. To try it quickly: `docker exec tdot-px4 /px4/bin/px4-param set SIM_BAT_DRAIN 90`
+(seconds from full to empty) mid-flight; Reset or reconnecting restores the bridge's value.
+
 ### Smoke tests
 
 Both check home is in Toronto, take off to 20 m and land. `flight_test.py` talks to PX4
