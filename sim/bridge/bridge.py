@@ -5,13 +5,14 @@ Browsers can't speak MAVLink over UDP, so this service connects to PX4 with
 MAVSDK and exposes a WebSocket the React app talks to:
 
   server → client  {"type": "status", "px4Connected": bool, "px4Version": str|null, "geofence": {...},
-                    "returnAltM": number|null}
+                    "returnAltM": number|null, "config": {...SimConfig}}
                    {"type": "state",  "state": {...DroneState...}}        (RATE_HZ)
                    {"type": "ack",    "id": str, "ok": bool, "error": str|null}
                    {"type": "notice", "level": "error", "message": str}   (e.g. offboard refused)
   client → server  {"type": "command", "id": str,
-                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset"|"returnAlt",
-                    "altitudeM"?: number, "lat"?: number, "lon"?: number, "relAltM"?: number}
+                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset"|"returnAlt"|"config",
+                    "altitudeM"?: number, "lat"?: number, "lon"?: number, "relAltM"?: number,
+                    "config"?: {...some SimConfig fields}}
                    {"type": "velocity", "forwardMs": n, "rightMs": n, "downMs": n, "yawRateDegS": n}
                      Keyboard flying: body-frame velocity, sent ~10 Hz while keys are held.
                      The bridge switches PX4 to offboard mode and streams the setpoint. If the
@@ -32,9 +33,16 @@ itself, whether or not a browser is connected.
 
 Return height: PX4's Return mode climbs to RTL_RETURN_ALT and flies straight home, not
 knowing about buildings. On connect the bridge turns off PX4's return cone (which lets
-it return lower near home) and sets a high default (RETURN_ALT_DEFAULT_M); while the app
+it return lower near home) and sets a high default (5 m under the ceiling); while the app
 is open it sends "returnAlt" with a height that clears the buildings between the drone
 and home (it has the City building data). Unlike other commands, "returnAlt" doesn't
+interrupt keyboard flying.
+
+Sim config: speeds, battery behaviour, the geofence ceiling and breach action, and what
+happens after a return (CONFIG_SPEC) are set from the app's Settings with the "config"
+command. The bridge validates them, saves them to CONFIG_FILE (so they survive restarts)
+and applies them to PX4's parameters, now and on every PX4 (re)connect. Unlike other
+commands, "config" works while PX4 is away (applied when it's back) and doesn't
 interrupt keyboard flying.
 
 Battery: PX4's simulated battery drains at a set rate while armed (SIM_BAT_DRAIN, the
@@ -42,7 +50,7 @@ seconds from full to empty) and refills on disarm. By default it stops at 50%, s
 bridge lets it run down to 0% and sets PX4's low-battery responses: a warning at 25%,
 Return at 15%, and landing where it is at 5% (BATTERY_*_THR; the app's warnings use the
 same levels). PX4's simulation knows nothing about load, so the bridge updates the drain
-rate about once a second from what the drone is doing (drain_factor): BATTERY_FLIGHT_MIN
+rate about once a second from what the drone is doing (drain_factor): `batteryMin`
 minutes of hovering, less idling on the ground or descending, more climbing or flying fast.
 """
 
@@ -66,7 +74,6 @@ RATE_HZ = float(os.environ.get("STATE_RATE_HZ", "20"))
 DEFAULT_TAKEOFF_ALT_M = 30.0
 # PX4 counts as connected while its telemetry keeps arriving.
 TELEMETRY_TIMEOUT_S = 3.0
-MAX_TAKEOFF_ALT_M = 120.0  # stay under the 122 m (400 ft) drone ceiling
 # Keyboard (offboard velocity) limits and timeouts.
 MAX_SPEED_MS = 12.0
 MAX_CLIMB_MS = 3.0
@@ -76,24 +83,105 @@ VELOCITY_STALE_S = 0.5  # no fresh input for this long → hover
 OFFBOARD_IDLE_S = 3.0  # no input for this long → leave offboard, PX4 Hold
 # Geofence (see module docstring).
 FENCE_FILE = os.environ.get("FENCE_FILE", "/data/boundary-fence.geojson")
-FENCE_CEILING_M = float(os.environ.get("FENCE_CEILING_M", "120"))
-FENCE_ACTION_RETURN = 3  # PX4 GF_ACTION: 1 warning, 2 hold, 3 return, 4 terminate, 5 land
 PX4_MAX_FENCE_POINTS = 63  # PX4 dataman holds 64 fence entries (one is bookkeeping)
-# Return home (see module docstring). Stay under the geofence ceiling, or the return itself breaches it.
-RETURN_ALT_MAX_M = FENCE_CEILING_M - 5
+# Return home (see module docstring): at most RETURN_BELOW_CEILING_M under the geofence
+# ceiling, or the return itself breaches it.
+RETURN_BELOW_CEILING_M = 5.0
 RETURN_ALT_MIN_M = 20.0
-RETURN_ALT_DEFAULT_M = RETURN_ALT_MAX_M  # until the app sends a building-aware height
-# Simulated battery: minutes of hovering from full to empty (PX4's default stops at 50%).
-BATTERY_FLIGHT_MIN = float(os.environ.get("BATTERY_FLIGHT_MIN", "20"))
-# How often the drain rate follows the load, and how much it must change to be re-sent.
+# How often the battery drain rate follows the load, and how much it must change to be re-sent.
 BATTERY_LOAD_INTERVAL_S = 1.0
 BATTERY_LOAD_MIN_CHANGE = 0.03
-# PX4's responses (frontend: BATTERY_* in src/drone/battery.ts): warn, Return home, land where it is.
-BATTERY_LOW_THR = 0.25
-BATTERY_CRIT_THR = 0.15
-BATTERY_EMERGENCY_THR = 0.05
-# COM_LOW_BAT_ACT: Return at the critical level, land at the emergency level.
-LOW_BATTERY_ACTION_RETURN_THEN_LAND = 3
+
+# Sim config (see module docstring): name → (type, min, max, default) for numbers,
+# (bool, default) or (tuple of choices, default). The app mirrors this in src/drone/simConfig.ts.
+CONFIG_FILE = os.environ.get("CONFIG_FILE", "/config/sim-config.json")
+CONFIG_SPEC: dict[str, tuple] = {
+    # Speeds, m/s: PX4's MPC_XY_CRUISE (fly-to, routes, Return), MPC_Z_V_AUTO_UP/_DN,
+    # MPC_TKO_SPEED, MPC_LAND_SPEED; keyboardMs is the app's keyboard flying speed.
+    "cruiseMs": (float, 1.0, 12.0, 5.0),
+    "climbMs": (float, 0.5, 8.0, 3.0),
+    "descendMs": (float, 0.5, 4.0, 1.5),
+    "takeoffMs": (float, 0.5, 5.0, 1.5),
+    "landMs": (float, 0.2, 2.0, 0.7),
+    "keyboardMs": (float, 1.0, 12.0, 6.0),
+    # Battery: minutes of hovering from full to empty; whether the drain follows the load;
+    # PX4's levels (BAT_LOW_THR, BAT_CRIT_THR, BAT_EMERGEN_THR) and what it does (COM_LOW_BAT_ACT).
+    "batteryMin": (float, 2.0, 60.0, float(os.environ.get("BATTERY_FLIGHT_MIN", "20"))),
+    "batteryLoad": (bool, True),
+    "batteryLowPct": (float, 5.0, 60.0, 25.0),
+    "batteryCriticalPct": (float, 3.0, 50.0, 15.0),
+    "batteryEmergencyPct": (float, 1.0, 30.0, 5.0),
+    "lowBatteryAction": (("return", "land", "warn"), "return"),
+    # Geofence: height ceiling above home (GF_MAX_VER_DIST) and what a breach does (GF_ACTION).
+    "ceilingM": (float, 20.0, 500.0, float(os.environ.get("FENCE_CEILING_M", "120"))),
+    "fenceAction": (("return", "hold", "land", "warn"), "return"),
+    # After Return reaches home: land, or hover there (RTL_LAND_DELAY).
+    "afterReturn": (("land", "hover"), "land"),
+}
+# PX4 values for the choices.
+LOW_BATTERY_ACTIONS = {"warn": 0, "land": 2, "return": 3}  # COM_LOW_BAT_ACT (3: Return, then land at emergency)
+FENCE_ACTIONS = {"warn": 1, "hold": 2, "return": 3, "land": 5}  # GF_ACTION
+AFTER_RETURN = {"land": 0.0, "hover": -1.0}  # RTL_LAND_DELAY
+
+
+def default_config() -> dict:
+    return {k: spec[-1] for k, spec in CONFIG_SPEC.items()}
+
+
+def validate_config(current: dict, updates: dict) -> dict:
+    """`current` with `updates` applied, or ValueError saying what's wrong."""
+    if not isinstance(updates, dict):
+        raise ValueError("config must be an object")
+    new = dict(current)
+    for key, value in updates.items():
+        spec = CONFIG_SPEC.get(key)
+        if spec is None:
+            raise ValueError(f"Unknown setting: {key}")
+        if spec[0] is bool:
+            if not isinstance(value, bool):
+                raise ValueError(f"{key} must be true or false")
+        elif isinstance(spec[0], tuple):
+            if value not in spec[0]:
+                raise ValueError(f"{key} must be one of {', '.join(spec[0])}")
+        else:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f"{key} must be a number")
+            if not spec[1] <= value <= spec[2]:
+                raise ValueError(f"{key} must be between {spec[1]:g} and {spec[2]:g}")
+            value = float(value)
+        new[key] = value
+    if not new["batteryLowPct"] > new["batteryCriticalPct"] > new["batteryEmergencyPct"]:
+        raise ValueError("Battery levels must go low > critical > emergency")
+    return new
+
+
+def load_config() -> dict:
+    """Saved config over the defaults; settings that are missing or no longer valid fall back."""
+    config = default_config()
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            saved = json.load(f)
+        for key, value in saved.items():
+            try:
+                config = validate_config(config, {key: value})
+            except ValueError as e:
+                log.warning("Ignoring saved setting %s: %s", key, e)
+    except FileNotFoundError:
+        pass
+    except Exception as e:  # noqa: BLE001
+        log.warning("Could not read %s: %s", CONFIG_FILE, e)
+    return config
+
+
+def save_config(config: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+        os.replace(tmp, CONFIG_FILE)
+    except Exception as e:  # noqa: BLE001 - still applied, just not kept over a restart
+        log.warning("Could not save the sim config to %s: %s", CONFIG_FILE, e)
 # Flight-mode telemetry lags a mode switch; ignore "not offboard" reports this soon after starting.
 OFFBOARD_MODE_GRACE_S = 1.5
 
@@ -162,7 +250,8 @@ class Bridge:
         # still held would count as a pilot takeover and cancel PX4's failsafe, so wait for a release.
         self.offboard_blocked = False
         self.resetting = False
-        self.geofence = {"source": None, "points": 0, "ceilingM": FENCE_CEILING_M, "uploaded": False, "error": None}
+        self.config = load_config()
+        self.geofence = {"source": None, "points": 0, "ceilingM": self.config["ceilingM"], "uploaded": False, "error": None}
         # Height PX4 returns home at, as last set (None until set on connect).
         self.return_alt: float | None = None
         self.s = {
@@ -239,8 +328,7 @@ class Bridge:
             self.px4_version = None
         log.info("PX4 connected (version %s)", self.px4_version)
         asyncio.create_task(self.upload_geofence())
-        asyncio.create_task(self.setup_return())
-        asyncio.create_task(self.setup_battery())
+        asyncio.create_task(self.setup_px4())
         t = self.drone.telemetry
         for setter in (t.set_rate_position, t.set_rate_attitude_euler, t.set_rate_velocity_ned):
             try:
@@ -268,10 +356,8 @@ class Bridge:
             await self.drone.geofence.upload_geofence(
                 GeofenceData(polygons=[Polygon([Point(lat, lon) for lat, lon in points], FenceType.INCLUSION)], circles=[])
             )
-            await self.drone.param.set_param_float("GF_MAX_VER_DIST", FENCE_CEILING_M)
-            await self.drone.param.set_param_int("GF_ACTION", FENCE_ACTION_RETURN)
             g.update(source=os.path.basename(FENCE_FILE), points=len(points), uploaded=True)
-            log.info("Geofence uploaded: %d-point City of Toronto boundary, %.0f m ceiling, breach → Return", len(points), FENCE_CEILING_M)
+            log.info("Geofence uploaded: %d-point City of Toronto boundary", len(points))
         except FileNotFoundError:
             g["error"] = f"{FENCE_FILE} not found (run `npm run data` in frontend/)"
             log.warning("No geofence: %s", g["error"])
@@ -280,33 +366,74 @@ class Bridge:
             log.warning("Geofence upload failed: %s", e)
         self.broadcast_status()
 
-    async def setup_return(self) -> None:
-        """Return home always climbs to the return height (no cone), starting high and safe."""
+    @property
+    def return_alt_max(self) -> float:
+        return self.config["ceilingM"] - RETURN_BELOW_CEILING_M
+
+    async def setup_px4(self) -> None:
+        """On connect: Return always climbs to its height (no cone), starting high; then the sim config."""
         self.return_alt = None
         try:
             await self.drone.param.set_param_int("RTL_CONE_ANG", 0)
-            await self.set_return_alt(RETURN_ALT_DEFAULT_M)
-            log.info("Return home: cone off, %.0f m until the app sends a building-aware height", RETURN_ALT_DEFAULT_M)
+            await self.drone.param.set_param_float("SIM_BAT_MIN_PCT", 0.0)  # PX4's default stops at 50%
+            await self.set_return_alt(self.return_alt_max)
         except Exception as e:  # noqa: BLE001
             log.warning("Could not set up Return home: %s", e)
+        await self.apply_config()
 
-    async def setup_battery(self) -> None:
-        """A simulated battery that runs out, and PX4's responses with time to get home."""
-        p = self.drone.param
+    async def apply_config(self) -> None:
+        """Sets PX4's parameters from the sim config (see CONFIG_SPEC)."""
+        c = self.config
+        floats = [
+            ("MPC_XY_CRUISE", c["cruiseMs"]),
+            # The auto speeds can't exceed these limits, so raise them along.
+            ("MPC_Z_VEL_MAX_UP", max(3.0, c["climbMs"], c["takeoffMs"])),
+            ("MPC_Z_VEL_MAX_DN", max(1.5, c["descendMs"], c["landMs"])),
+            ("MPC_Z_V_AUTO_UP", c["climbMs"]),
+            ("MPC_Z_V_AUTO_DN", c["descendMs"]),
+            ("MPC_TKO_SPEED", c["takeoffMs"]),
+            ("MPC_LAND_SPEED", c["landMs"]),
+            ("SIM_BAT_DRAIN", c["batteryMin"] * 60),
+            ("BAT_LOW_THR", c["batteryLowPct"] / 100),
+            ("BAT_CRIT_THR", c["batteryCriticalPct"] / 100),
+            ("BAT_EMERGEN_THR", c["batteryEmergencyPct"] / 100),
+            ("GF_MAX_VER_DIST", c["ceilingM"]),
+            ("RTL_LAND_DELAY", AFTER_RETURN[c["afterReturn"]]),
+        ]
+        ints = [
+            ("COM_LOW_BAT_ACT", LOW_BATTERY_ACTIONS[c["lowBatteryAction"]]),
+            ("GF_ACTION", FENCE_ACTIONS[c["fenceAction"]]),
+        ]
         try:
-            self.drain_sent = None
-            await p.set_param_float("SIM_BAT_DRAIN", BATTERY_FLIGHT_MIN * 60)
-            await p.set_param_float("SIM_BAT_MIN_PCT", 0.0)
-            await p.set_param_float("BAT_LOW_THR", BATTERY_LOW_THR)
-            await p.set_param_float("BAT_CRIT_THR", BATTERY_CRIT_THR)
-            await p.set_param_float("BAT_EMERGEN_THR", BATTERY_EMERGENCY_THR)
-            await p.set_param_int("COM_LOW_BAT_ACT", LOW_BATTERY_ACTION_RETURN_THEN_LAND)
+            for name, value in floats:
+                await self.drone.param.set_param_float(name, float(value))
+            for name, value in ints:
+                await self.drone.param.set_param_int(name, value)
+            self.drain_sent = None  # the load loop re-sends the drain rate
+            self.geofence["ceilingM"] = c["ceilingM"]
+            # A lower ceiling: keep Return under it (the app sends a building-aware height again).
+            if self.return_alt is not None and self.return_alt > self.return_alt_max:
+                await self.set_return_alt(self.return_alt_max)
             log.info(
-                "Battery: %.0f min hover, drain follows load; warn %.0f%%, Return %.0f%%, land %.0f%%",
-                BATTERY_FLIGHT_MIN, BATTERY_LOW_THR * 100, BATTERY_CRIT_THR * 100, BATTERY_EMERGENCY_THR * 100,
+                "Sim config applied: cruise %.1f m/s, battery %.0f min (%s), levels %.0f/%.0f/%.0f%% → %s, "
+                "ceiling %.0f m → %s, after return %s",
+                c["cruiseMs"], c["batteryMin"], "load" if c["batteryLoad"] else "fixed",
+                c["batteryLowPct"], c["batteryCriticalPct"], c["batteryEmergencyPct"], c["lowBatteryAction"],
+                c["ceilingM"], c["fenceAction"], c["afterReturn"],
             )
         except Exception as e:  # noqa: BLE001
-            log.warning("Could not set up the battery: %s", e)
+            log.warning("Could not apply the sim config: %s", e)
+        self.broadcast_status()
+
+    async def update_config(self, updates: dict) -> None:
+        """The app changed settings: check, save and apply them (when PX4 is there)."""
+        self.config = validate_config(self.config, updates)
+        save_config(self.config)
+        if self.px4_connected:
+            await self.apply_config()
+        else:
+            self.geofence["ceilingM"] = self.config["ceilingM"]
+            self.broadcast_status()
 
     async def follow_battery_load(self) -> None:
         """Keeps PX4's simulated drain rate in line with the load (see drain_factor)."""
@@ -316,20 +443,22 @@ class Bridge:
             if not (self.px4_connected and s["armed"]):
                 self.drain_load = 1.0
                 continue
+            if not self.config["batteryLoad"]:
+                continue  # fixed rate: apply_config set it
             target = drain_factor(s["inAir"], s["climbRateMs"], s["groundSpeedMs"])
             self.drain_load += 0.4 * (target - self.drain_load)  # smooth over a few seconds
             sent = self.drain_sent
             if sent is not None and abs(self.drain_load - sent) / sent < BATTERY_LOAD_MIN_CHANGE:
                 continue
             try:
-                await self.drone.param.set_param_float("SIM_BAT_DRAIN", BATTERY_FLIGHT_MIN * 60 / self.drain_load)
+                await self.drone.param.set_param_float("SIM_BAT_DRAIN", self.config["batteryMin"] * 60 / self.drain_load)
                 self.drain_sent = self.drain_load
                 log.debug("Battery drain ×%.2f", self.drain_load)
             except Exception as e:  # noqa: BLE001 - e.g. PX4 restarting
                 log.debug("Could not set the battery drain: %s", e)
 
     async def set_return_alt(self, rel_alt_m: float) -> None:
-        alt = round(max(RETURN_ALT_MIN_M, min(RETURN_ALT_MAX_M, rel_alt_m)), 1)
+        alt = round(max(RETURN_ALT_MIN_M, min(self.return_alt_max, rel_alt_m)), 1)
         if alt == self.return_alt:
             return
         await self.drone.action.set_return_to_launch_altitude(alt)
@@ -403,7 +532,7 @@ class Bridge:
         self.offboard_blocked = False
         if action == "takeoff":
             alt = float(msg.get("altitudeM") or DEFAULT_TAKEOFF_ALT_M)
-            alt = max(2.0, min(MAX_TAKEOFF_ALT_M, alt))
+            alt = max(2.0, min(self.config["ceilingM"], alt))
             await a.set_takeoff_altitude(alt)
             if not self.s["armed"] and self.s["flightMode"] == "Offboard":
                 # Landed while keyboard flying: PX4 won't arm in offboard once the setpoint
@@ -435,7 +564,7 @@ class Bridge:
             lat, lon = float(msg["lat"]), float(msg["lon"])
             home = self.s["home"] or {"altAmslM": self.s["altAmslM"] - self.s["relAltM"]}
             rel = msg.get("relAltM")
-            rel = self.s["relAltM"] if rel is None else max(5.0, min(MAX_TAKEOFF_ALT_M, float(rel)))
+            rel = self.s["relAltM"] if rel is None else max(5.0, min(self.config["ceilingM"], float(rel)))
             # NaN yaw: let PX4 face the direction of travel.
             await a.goto_location(lat, lon, home["altAmslM"] + rel, math.nan)
         else:
@@ -552,6 +681,7 @@ class Bridge:
                 "px4Version": self.px4_version,
                 "geofence": self.geofence,
                 "returnAltM": self.return_alt,
+                "config": self.config,
                 "resetting": self.resetting,
             }
         )
@@ -582,7 +712,14 @@ class Bridge:
     async def handle_command(self, ws: ServerConnection, msg: dict) -> None:
         action = str(msg.get("action", ""))
         reply = {"type": "ack", "id": msg.get("id"), "ok": True, "error": None}
-        if not self.px4_connected:
+        if action == "config":
+            # A setting, not a flight command: works without PX4, leaves keyboard flying alone.
+            try:
+                await self.update_config(msg.get("config"))
+                log.info("Sim config changed: %s", ", ".join(sorted(msg["config"])))
+            except Exception as e:  # noqa: BLE001
+                reply.update(ok=False, error=str(e))
+        elif not self.px4_connected:
             reply.update(ok=False, error="PX4 is not connected")
         else:
             try:

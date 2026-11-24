@@ -1,22 +1,26 @@
 /**
- * Battery levels and flight time left. PX4's simulated battery drains steadily while
- * armed (the bridge sets it to run out, see bridge.py "Battery") and PX4 acts on these
- * levels itself: a warning, then Return home, then landing wherever it is.
+ * Battery levels and flight time left. PX4's simulated battery drains while armed (the
+ * bridge sets it to run out, see bridge.py "Battery") and PX4 acts on the levels in the
+ * sim config itself: a warning, then (as set) Return home or landing, then landing
+ * wherever it is.
  */
 
-/** PX4 warns (bridge: BATTERY_LOW_THR). */
-export const BATTERY_LOW = 0.25
-/** PX4 flies home (bridge: BATTERY_CRIT_THR). */
-export const BATTERY_CRITICAL = 0.15
-/** PX4 lands where it is (bridge: BATTERY_EMERGENCY_THR). */
-export const BATTERY_EMERGENCY = 0.05
+/** The three levels as fractions (0–1), from the sim config's percentages. */
+export type BatteryThresholds = { low: number; critical: number; emergency: number }
+
+export function batteryThresholds(c: { batteryLowPct: number; batteryCriticalPct: number; batteryEmergencyPct: number }): BatteryThresholds {
+  return { low: c.batteryLowPct / 100, critical: c.batteryCriticalPct / 100, emergency: c.batteryEmergencyPct / 100 }
+}
+
+/** PX4's defaults as the bridge sets them (25 / 15 / 5%). */
+export const DEFAULT_THRESHOLDS: BatteryThresholds = { low: 0.25, critical: 0.15, emergency: 0.05 }
 
 export type BatteryLevel = 'ok' | 'low' | 'critical' | 'emergency'
 
-export function batteryLevel(battery: number): BatteryLevel {
-  if (battery <= BATTERY_EMERGENCY) return 'emergency'
-  if (battery <= BATTERY_CRITICAL) return 'critical'
-  if (battery <= BATTERY_LOW) return 'low'
+export function batteryLevel(battery: number, t: BatteryThresholds = DEFAULT_THRESHOLDS): BatteryLevel {
+  if (battery <= t.emergency) return 'emergency'
+  if (battery <= t.critical) return 'critical'
+  if (battery <= t.low) return 'low'
   return 'ok'
 }
 
@@ -41,7 +45,7 @@ const MIN_DROP = 0.002
 export class BatteryEstimator {
   private samples: { t: number; b: number }[] = []
 
-  update(timeMs: number, battery: number, armed: boolean): BatteryInfo {
+  update(timeMs: number, battery: number, armed: boolean, t: BatteryThresholds = DEFAULT_THRESHOLDS): BatteryInfo {
     const last = this.samples[this.samples.length - 1]
     if (!armed || (last && (battery > last.b + 0.01 || timeMs < last.t))) this.samples = []
     if (armed && (!last || timeMs - last.t >= 1000 || this.samples.length === 0)) this.samples.push({ t: timeMs, b: battery })
@@ -54,7 +58,7 @@ export class BatteryEstimator {
       perMin = ((first.b - newest.b) / (newest.t - first.t)) * 60_000
     }
     const until = (thr: number) => (perMin ? Math.max(0, (battery - thr) / perMin) : null)
-    return { level: batteryLevel(battery), minToReturn: until(BATTERY_CRITICAL), minToLand: until(BATTERY_EMERGENCY) }
+    return { level: batteryLevel(battery, t), minToReturn: until(t.critical), minToLand: until(t.emergency) }
   }
 }
 

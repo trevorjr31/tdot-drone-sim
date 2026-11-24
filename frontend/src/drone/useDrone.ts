@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { centreOf, type MapApi, type Place } from '../places/types'
 import type { DroneView, FlyToTarget, HudInfo, RoutePreview } from './droneView'
-import { BatteryEstimator, type BatteryInfo } from './battery'
+import { BatteryEstimator, batteryThresholds, type BatteryInfo } from './battery'
+import { DEFAULT_SIM_CONFIG, RETURN_MIN_ALT_M, returnMaxAltM, type SimConfig } from './simConfig'
 import { KeyboardFlight } from './keyboardFlight'
 import { Px4BridgeSource, type BridgeStatus, type Px4Command, type Px4CommandParams } from './px4Bridge'
 import type { CrashSite } from './crash'
@@ -10,6 +11,8 @@ import { loadMassingIndex, loadMassingTile } from '../data/torontoData'
 import { buildingName, type Building } from './collision'
 import { RouteSafety } from './routeSafety'
 import {
+  checkBattery,
+  estimateReturn,
   estimateRoute,
   formatLatLon,
   planPreview,
@@ -18,6 +21,7 @@ import {
   ROUTE_MAX_STOPS,
   routeSteps,
   stepStop,
+  type BatteryCheck,
   type RouteEstimate,
   type RouteStart,
   type RouteStep,
@@ -40,6 +44,8 @@ export type RouteCheckInfo =
       destHighest: { name: string | null; heightM: number } | null
       /** Lowest safe crossing height for each leg (drone → stop 1, stop 1 → stop 2, …). */
       legMinSafeM: number[]
+      /** Lowest safe height for the flight home from the last stop (Return's height there). */
+      returnMinSafeM: number
     }
 
 /**
@@ -50,8 +56,9 @@ export type RouteCheckInfo =
 export function routeProblem(
   c: Extract<RouteCheckInfo, { status: 'done' }>,
   altM: number,
+  ceilingM: number = DEFAULT_SIM_CONFIG.ceilingM,
 ): { kind: 'ceiling' | 'destination'; needM: number } | null {
-  if (c.minSafeRelAltM > ROUTE_MAX_ALT_M) return { kind: 'ceiling', needM: c.minSafeRelAltM }
+  if (c.minSafeRelAltM > ceilingM) return { kind: 'ceiling', needM: c.minSafeRelAltM }
   if (altM < c.destMinSafeRelAltM) return { kind: 'destination', needM: c.destMinSafeRelAltM }
   return null
 }
@@ -65,12 +72,11 @@ export function crossingAltM(altM: number, currentAltM: number | null, minSafeRe
   return Math.max(altM, currentAltM ?? 0, minSafeRelAltM)
 }
 
-/** Highest a route may fly: PX4's geofence ceiling (the bridge clamps heights to this too). */
-export const ROUTE_MAX_ALT_M = 120
-/** Highest Return home may fly: under the geofence ceiling, or the return itself breaches it (bridge: RETURN_ALT_MAX_M). */
-export const RETURN_MAX_ALT_M = 115
-/** Lowest return height the app sets (bridge: RETURN_ALT_MIN_M). */
-export const RETURN_MIN_ALT_M = 20
+/** A planned route's battery: what the route and the flight home after it use, and whether it's enough. */
+export type RouteBattery = BatteryCheck & {
+  /** Flying home from the last stop (PX4's Return). */
+  home: RouteEstimate
+}
 
 /** Return home's height, kept clear of the buildings between the drone and home. */
 export type ReturnPlan = {
@@ -80,6 +86,8 @@ export type ReturnPlan = {
   highest: { name: string | null; heightM: number } | null
   /** False when that building is too tall to clear under the ceiling. */
   safe: boolean
+  /** Highest Return may fly (5 m under the geofence ceiling). */
+  maxM: number
 }
 
 /** A planned route being flown: its steps, the one in progress, and the stops. */
@@ -142,6 +150,13 @@ export function useDrone({ pickLocation }: Options = {}) {
   const [routeSafety, setRouteSafety] = useState<RouteSafety | null>(null)
   /** Battery level and minutes left (from the drain rate) while flying. */
   const [battery, setBattery] = useState<BatteryInfo | null>(null)
+  /** The simulated drone's settings, as the bridge reports them (defaults until it does). */
+  const [simConfig, setSimConfig] = useState<SimConfig>(() => px4.config ?? DEFAULT_SIM_CONFIG)
+  const simConfigRef = useRef(simConfig)
+  useEffect(() => {
+    simConfigRef.current = simConfig
+  }, [simConfig])
+  useEffect(() => px4.onConfig((c) => setSimConfig(c ?? DEFAULT_SIM_CONFIG)), [px4])
   const [checkResult, setCheckResult] = useState<{ key: string; info: RouteCheckInfo } | null>(null)
   /** Latest drone state, for commands that need the current position. */
   const stateRef = useRef<HudInfo['state'] | null>(null)
@@ -155,7 +170,9 @@ export function useDrone({ pickLocation }: Options = {}) {
     const batteryEstimator = new BatteryEstimator()
     const offHud = droneView.onHud((h) => {
       setHud(h)
-      const b = h ? batteryEstimator.update(h.state.timeMs, h.state.battery, h.state.armed) : null
+      const b = h
+        ? batteryEstimator.update(h.state.timeMs, h.state.battery, h.state.armed, batteryThresholds(simConfigRef.current))
+        : null
       setBattery((prev) => (sameBattery(prev, b) ? prev : b))
       const flying = !!h && (h.state.armed || h.state.inAir)
       inAirRef.current = !!h?.state.inAir
@@ -318,8 +335,9 @@ export function useDrone({ pickLocation }: Options = {}) {
       .check({ lat: s.lat, lon: s.lon }, s.home, s.home.altAmslM)
       .then((r) => {
         if (cancelled) return
-        const altM = Math.max(RETURN_MIN_ALT_M, Math.min(RETURN_MAX_ALT_M, r.minSafeRelAltM))
-        setReturnPlan({ altM, highest: describe(r.highest), safe: r.minSafeRelAltM <= RETURN_MAX_ALT_M })
+        const max = returnMaxAltM(simConfigRef.current)
+        const altM = Math.max(RETURN_MIN_ALT_M, Math.min(max, r.minSafeRelAltM))
+        setReturnPlan({ altM, highest: describe(r.highest), safe: r.minSafeRelAltM <= max, maxM: max })
         // Tell PX4 when it changed (the bridge reports what's set, so a PX4 restart is picked up).
         if (returnSending.current || Math.abs((px4.returnAltM ?? -1) - altM) < 1) return
         returnSending.current = true
@@ -332,7 +350,8 @@ export function useDrone({ pickLocation }: Options = {}) {
     return () => {
       cancelled = true
     }
-  }, [returnKey, routeSafety, px4])
+    // simConfig.ceilingM: a new ceiling changes the highest Return may fly.
+  }, [returnKey, routeSafety, px4, simConfig.ceilingM])
 
   const routeCheck: RouteCheckInfo | null = !checkKey
     ? null
@@ -349,7 +368,11 @@ export function useDrone({ pickLocation }: Options = {}) {
     : null
   const legMinSafeM = routeCheck?.status === 'done' ? routeCheck.legMinSafeM : routeStops.map(() => 0)
   const planSteps = planning && start ? routeSteps(start, routeStops, legMinSafeM, planAltM) : null
-  const routeEstimate = planSteps && start ? estimateRoute(start, planSteps) : null
+  const routeEstimate = planSteps && start ? estimateRoute(start, planSteps, simConfig) : null
+  const routeBattery =
+    planSteps && start && hud && routeEstimate && routeCheck?.status === 'done'
+      ? batteryFor(routeEstimate, routeStops, routeCheck.returnMinSafeM, planAltM, hud.state, simConfig)
+      : null
   const preview = planSteps
     ? planPreview(routeStops, planSteps)
     : autopilot && routeRun
@@ -371,10 +394,13 @@ export function useDrone({ pickLocation }: Options = {}) {
       stopCount: stops.length,
       stopLabel: stops[stopIndex]?.label ?? 'the destination',
       heightM: step ? step.altM : routeRun.altM,
-      remaining: step && start ? estimateRoute(start, steps.slice(i)) : null,
+      remaining: step && start ? estimateRoute(start, steps.slice(i), simConfig) : null,
       finalDescent: phase === 'descending' && !steps.some((st, k) => k > i && st.kind === 'fly'),
     }
   }
+
+  /** Change sim settings: the bridge checks, saves and applies them (rejects with its reason). */
+  const updateSimConfig = useCallback((changes: Partial<SimConfig>) => px4.command('config', { config: changes }), [px4])
 
   // --- pre-flight -----------------------------------------------------------
 
@@ -437,23 +463,33 @@ export function useDrone({ pickLocation }: Options = {}) {
       const s = stateRef.current
       if (!routeStops.length || !s) return
       // Recheck from exactly where the drone is now.
+      const config = simConfigRef.current
+      const start = { lat: s.lat, lon: s.lon, relAltM: s.relAltM, inAir: inAirRef.current }
       let legMinSafe = routeStops.map(() => 0)
       if (routeSafety) {
         const check = await checkRoute(routeSafety, s, routeStops).catch(() => null)
         if (check?.status === 'done') {
-          const problem = routeProblem(check, altM)
+          const problem = routeProblem(check, altM, config.ceilingM)
           if (problem) {
             setPx4Error(
               problem.kind === 'ceiling'
-                ? `This route needs ${problem.needM} m to clear the buildings on the way, above the ${ROUTE_MAX_ALT_M} m ceiling.`
+                ? `This route needs ${problem.needM} m to clear the buildings on the way, above the ${config.ceilingM} m ceiling.`
                 : `Too low for the destination: it needs at least ${problem.needM} m.`,
             )
             return
           }
           legMinSafe = check.legMinSafeM
+          // Enough battery for the route and the flight home after it?
+          const steps = routeSteps(start, routeStops, legMinSafe, altM)
+          const b = batteryFor(estimateRoute(start, steps, config), routeStops, check.returnMinSafeM, altM, s, config)
+          if (!b.ok) {
+            setPx4Error(
+              `Not enough battery: this route and the flight home would leave ${pct(b.atHome)}, under the ${pct(b.reserve)} reserve.`,
+            )
+            return
+          }
         }
       }
-      const start = { lat: s.lat, lon: s.lon, relAltM: s.relAltM, inAir: inAirRef.current }
       const steps = routeSteps(start, routeStops, legMinSafe, altM)
       setAutopilot(true)
       updateRun({ steps, i: -1, stops: routeStops, altM, phase: 'climbing' })
@@ -495,6 +531,7 @@ export function useDrone({ pickLocation }: Options = {}) {
   // No keyboard while the autopilot flies a planned route (until "Take over controls").
   const canFly = px4Status === 'connected' && !crashed && !autopilot && (hud?.state.inAir ?? false)
   useEffect(() => keyboardRef.current?.setEnabled(canFly), [canFly])
+  useEffect(() => keyboardRef.current?.setHorizontalSpeed(simConfig.keyboardMs), [simConfig.keyboardMs])
 
   // Building collisions: PX4 doesn't know about buildings, so the app decides it crashed.
   // The drone is drawn falling from the impact point at the wall (never inside), and with
@@ -556,7 +593,10 @@ export function useDrone({ pickLocation }: Options = {}) {
         onPlanAltM: setPlanAltM,
         onStartRoute: (altM: number) => void startRoute(altM),
         routeEstimate,
+        routeBattery,
         routeProgress,
+        ceilingM: simConfig.ceilingM,
+        simConfig,
         routeCheck,
         overBuilding: collision.below,
         returnPlan,
@@ -575,14 +615,43 @@ export function useDrone({ pickLocation }: Options = {}) {
     setTrailVisible,
     /** For the route planner's search box. */
     routeToPlace,
+    /** The simulated drone's settings (Settings → Simulation), and changing them. */
+    simConfig,
+    updateSimConfig,
   }
+}
+
+function pct(x: number) {
+  return `${Math.max(0, Math.round(x * 100))}%`
+}
+
+/**
+ * Battery for a planned route: the route itself, then PX4's Return from the last stop
+ * (at the height that clears the buildings home), checked against the reserve.
+ */
+function batteryFor(
+  route: RouteEstimate,
+  stops: FlyToTarget[],
+  returnMinSafeM: number,
+  endAltM: number,
+  s: HudInfo['state'],
+  config: SimConfig,
+): RouteBattery {
+  const last = stops[stops.length - 1]
+  const returnAltM = Math.max(RETURN_MIN_ALT_M, Math.min(returnMaxAltM(config), returnMinSafeM))
+  const home = estimateReturn(last, s.home ?? { lat: s.lat, lon: s.lon }, endAltM, returnAltM, config)
+  return { ...checkBattery(s.battery, route, home, config), home }
 }
 
 /** Buildings along each leg of the route (drone → first stop → … → last stop), as the panel shows them. */
 async function checkRoute(safety: RouteSafety, s: HudInfo['state'], stops: FlyToTarget[]): Promise<RouteCheckInfo> {
   const homeAmslM = s.home?.altAmslM ?? s.altAmslM - s.relAltM
   const points = [{ lat: s.lat, lon: s.lon }, ...stops]
-  const legs = await Promise.all(stops.map((stop, i) => safety.check(points[i], stop, homeAmslM)))
+  const homePoint = s.home ?? { lat: s.lat, lon: s.lon }
+  const [home, ...legs] = await Promise.all([
+    safety.check(stops[stops.length - 1], homePoint, homeAmslM),
+    ...stops.map((stop, i) => safety.check(points[i], stop, homeAmslM)),
+  ])
   const worst = legs.reduce((w, r) => (r.minSafeRelAltM > w.minSafeRelAltM ? r : w), legs[0])
   const last = legs[legs.length - 1]
   return {
@@ -592,6 +661,7 @@ async function checkRoute(safety: RouteSafety, s: HudInfo['state'], stops: FlyTo
     destMinSafeRelAltM: last.destMinSafeRelAltM,
     destHighest: describe(last.destHighest),
     legMinSafeM: legs.map((r) => r.minSafeRelAltM),
+    returnMinSafeM: home.minSafeRelAltM,
   }
 }
 

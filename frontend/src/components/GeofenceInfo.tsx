@@ -1,18 +1,28 @@
 import type { BridgeStatus, GeofenceStatus } from '../drone/px4Bridge'
+import type { SimConfig } from '../drone/simConfig'
 import type { ReturnPlan } from '../drone/useDrone'
 
+const ON_BREACH: Record<SimConfig['fenceAction'], string> = {
+  return: 'Return home',
+  hold: 'Hold where it is',
+  land: 'Land where it is',
+  warn: 'Only warn',
+}
+
 /**
- * Read-only summary of the geofence the bridge uploads to PX4 (Settings menu).
- * PX4 enforces it itself; the app only reports it.
+ * Summary of the geofence the bridge uploads to PX4 (Settings menu); the ceiling and
+ * breach action are set under Simulation. PX4 enforces it itself; the app only reports it.
  */
 export function GeofenceInfo({
   status,
   geofence,
   returnPlan,
+  config,
 }: {
   status: BridgeStatus
   geofence: GeofenceStatus | null
   returnPlan: ReturnPlan | null
+  config: SimConfig
 }) {
   const state =
     status !== 'connected' || !geofence
@@ -27,9 +37,9 @@ export function GeofenceInfo({
       <dt>Area</dt>
       <dd>City of Toronto boundary</dd>
       <dt>Ceiling</dt>
-      <dd>{geofence ? `${geofence.ceilingM.toFixed(0)} m above home` : '—'}</dd>
+      <dd>{config.ceilingM.toFixed(0)} m above home</dd>
       <dt>On breach</dt>
-      <dd>Return home</dd>
+      <dd>{ON_BREACH[config.fenceAction]}</dd>
       <dt>Return at</dt>
       <dd
         className={returnPlan && !returnPlan.safe ? 'settings__fact is-bad' : undefined}

@@ -834,6 +834,9 @@ body,
 .settings__menu {
   width: 240px;
   max-width: calc(100vw - 24px);
+  /* Below the button (12 px + 38 px + 6 px gap), scrolling inside rather than past the window. */
+  max-height: calc(100vh - 68px);
+  overflow-y: auto;
   padding-top: 4px;
 }
 
@@ -1052,4 +1055,86 @@ body,
 }
 .settings__fact.is-bad {
   color: #e63946;
+}
+
+/* Settings → Simulation: the sim config form. */
+.sim-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 12px 6px;
+  font-size: 12px;
+}
+
+.sim-settings__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.sim-settings__group legend {
+  padding: 4px 0 2px;
+  color: var(--panel-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sim-settings__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.sim-settings__row:has(select) {
+  grid-template-columns: auto 1fr;
+}
+
+.sim-settings__row input,
+.sim-settings__row select {
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--panel-text);
+  font: inherit;
+}
+
+.sim-settings__row input {
+  width: 64px;
+  text-align: right;
+}
+
+.sim-settings__unit {
+  width: 26px;
+  color: var(--panel-muted);
+}
+
+.sim-settings__check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sim-settings__buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.sim-settings__msg {
+  color: var(--panel-muted);
+}
+
+.sim-settings__msg.is-bad {
+  color: #e63946;
+}
+
+.sim-settings__note {
+  margin: 0;
+  color: var(--panel-muted);
+  font-size: 11px;
 }

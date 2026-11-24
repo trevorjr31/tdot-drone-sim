@@ -7,6 +7,7 @@
  */
 import { distanceM } from '../places/geo'
 import type { FlyToTarget, PreviewPoint, RoutePreview } from './droneView'
+import { DEFAULT_SIM_CONFIG, drainFactor, type SimConfig } from './simConfig'
 
 /** Closer than this to a height counts as there (PX4 overshoots/undershoots a little). */
 export const ROUTE_HEIGHT_TOLERANCE_M = 2
@@ -14,18 +15,19 @@ export const ROUTE_HEIGHT_TOLERANCE_M = 2
 export const ROUTE_MAX_STOPS = 8
 
 /**
- * Speeds for the estimate, measured flying routes in the sim with PX4 v1.16's defaults:
- * a leg averages 4 m/s including speeding up and slowing down (cruise is 5 m/s,
- * MPC_XY_CRUISE), plus ~5 s to settle within reach of the stop before the next leg.
- * Climbs and descents run at MPC_Z_V_AUTO_UP / _DN, take-offs at MPC_TKO_SPEED.
+ * Timing for the estimate, measured flying routes in the sim: a leg averages 80% of the
+ * cruise speed including speeding up and slowing down (4 m/s at PX4's default 5), plus
+ * ~5 s to settle within reach of the stop before the next leg. Climbs, descents, take-offs
+ * and landings run at the sim config's speeds.
  */
-const LEG_MS = 4
+const LEG_SPEED_OF_CRUISE = 0.8
 const ARRIVE_S = 5
-const CLIMB_MS = 3
-const DESCEND_MS = 1.5
-const TAKEOFF_MS = 1.5
-/** Arming and spinning up before a take-off, seconds. */
+/** Arming and spinning up before a take-off, seconds (on the ground, armed). */
 const TAKEOFF_START_S = 2
+/** PX4's Return descends at the auto descent speed to this height (RTL_DESCEND_ALT), then lands. */
+const RETURN_DESCEND_ALT_M = 10
+/** Below this, a landing slows to the landing speed (MPC_LAND_ALT2). */
+const LAND_SLOW_ALT_M = 5
 
 export type RouteStart = { lat: number; lon: number; relAltM: number; inAir: boolean }
 
@@ -72,29 +74,107 @@ export type RouteEstimate = {
   climbM: number
   /** Flight time, seconds. */
   timeS: number
+  /** Battery it uses, as a fraction of a full battery (0–1). */
+  battery: number
 }
 
-/** How far and how long the steps take from `start`, at PX4's speeds. */
-export function estimateRoute(start: RouteStart, steps: RouteStep[]): RouteEstimate {
+/**
+ * Time and battery as the drone flies, piece by piece: `time` seconds at a drain of
+ * `factor` × hovering (from the bridge's load model, or 1 with a fixed drain rate).
+ */
+class Tally {
+  timeS = 0
+  battery = 0
+  private readonly c: SimConfig
+  constructor(c: SimConfig) {
+    this.c = c
+  }
+  add(timeS: number, inAir: boolean, climbMs: number, speedMs: number) {
+    const factor = this.c.batteryLoad ? drainFactor(inAir, climbMs, speedMs) : 1
+    this.timeS += timeS
+    this.battery += (timeS * factor) / (this.c.batteryMin * 60)
+  }
+  /** Climb or descend `dh` metres at the auto speeds. */
+  vertical(dh: number) {
+    if (dh > 0) this.add(dh / this.c.climbMs, true, this.c.climbMs, 0)
+    else if (dh < 0) this.add(-dh / this.c.descendMs, true, -this.c.descendMs, 0)
+  }
+  /** Fly `d` metres to a stop and settle there. */
+  leg(d: number) {
+    const speed = this.c.cruiseMs * LEG_SPEED_OF_CRUISE
+    this.add(d / speed, true, 0, speed)
+    this.add(ARRIVE_S, true, 0, 0)
+  }
+}
+
+/** How far, how long and how much battery the steps take from `start`, at the sim's speeds. */
+export function estimateRoute(start: RouteStart, steps: RouteStep[], config: SimConfig = DEFAULT_SIM_CONFIG): RouteEstimate {
+  const t = new Tally(config)
   let distance = 0
   let climb = 0
-  let time = 0
   let height = start.inAir ? start.relAltM : 0
   let at = { lat: start.lat, lon: start.lon }
   for (const step of steps) {
     if (step.kind === 'fly') {
       const d = distanceM(at.lon, at.lat, step.dest.lon, step.dest.lat)
       distance += d
-      time += d / LEG_MS + ARRIVE_S
+      t.leg(d)
       at = step.dest
     } else {
       const dh = step.altM - height
       climb += Math.abs(dh)
-      time += step.kind === 'takeoff' ? TAKEOFF_START_S + dh / TAKEOFF_MS : dh > 0 ? dh / CLIMB_MS : -dh / DESCEND_MS
+      if (step.kind === 'takeoff') {
+        t.add(TAKEOFF_START_S, false, 0, 0)
+        t.add(Math.max(0, dh) / config.takeoffMs, true, config.takeoffMs, 0)
+      } else t.vertical(dh)
       height = step.altM
     }
   }
-  return { distanceM: distance, climbM: climb, timeS: time }
+  return { distanceM: distance, climbM: climb, timeS: t.timeS, battery: t.battery }
+}
+
+/**
+ * PX4's Return from `from` (at `relAltM`): climb to the return height if lower, fly
+ * straight home, descend, land. `returnAltM` is the height the app would set there.
+ */
+export function estimateReturn(
+  from: { lat: number; lon: number },
+  home: { lat: number; lon: number },
+  relAltM: number,
+  returnAltM: number,
+  config: SimConfig = DEFAULT_SIM_CONFIG,
+): RouteEstimate {
+  const t = new Tally(config)
+  const d = distanceM(from.lon, from.lat, home.lon, home.lat)
+  const flyAt = Math.max(relAltM, returnAltM)
+  t.vertical(flyAt - relAltM)
+  if (d > 1) t.leg(d)
+  const slow = Math.min(flyAt, RETURN_DESCEND_ALT_M)
+  t.vertical(-(flyAt - slow))
+  // Landing: descent speed down to 5 m, then the landing speed.
+  const lowSlow = Math.min(slow, LAND_SLOW_ALT_M)
+  t.add((slow - lowSlow) / config.descendMs, true, -config.descendMs, 0)
+  t.add(lowSlow / config.landMs, true, -config.landMs, 0)
+  return { distanceM: d, climbM: Math.abs(flyAt - relAltM) + flyAt, timeS: t.timeS, battery: t.battery }
+}
+
+export type BatteryCheck = {
+  /** Battery now, at the last stop, and back home after a Return from there (fractions). */
+  now: number
+  atEnd: number
+  atHome: number
+  /** The least it should land with: the critical level, where PX4 would act on its own. */
+  reserve: number
+  /** Enough to fly the route and get home with the reserve left. */
+  ok: boolean
+}
+
+/** Whether the battery covers the route and the flight home after it, with the critical level spare. */
+export function checkBattery(now: number, route: RouteEstimate, home: RouteEstimate, config: SimConfig): BatteryCheck {
+  const reserve = config.batteryCriticalPct / 100
+  const atEnd = now - route.battery
+  const atHome = atEnd - home.battery
+  return { now, atEnd, atHome, reserve, ok: atHome >= reserve }
 }
 
 /**

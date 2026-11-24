@@ -81,9 +81,10 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
     shown as its coordinates if there's no building or it has no name or address); add
     more stops the same way (up to 8) to visit them in order, reorder them with ↑ or
     remove them with ×. Set the **height** to arrive at and **Take off**. The panel shows
-    the route's **distance and flight time** (estimated at PX4's speeds, as measured in the
-    sim) and warns if the battery would run low before the end, and the map shows the stops
-    and the path in grey. The drone flies the route on autopilot: the panel shows which
+    the route's **distance and flight time** (at the sim config's speeds, calibrated in the
+    sim) and its **battery**: what's left at the last stop and back home after PX4's Return
+    from there. Take off is refused if it would get home with less than the critical level
+    (15% by default). The map shows the stops and the path in grey. The drone flies the route on autopilot: the panel shows which
     stop it's heading for, the distance and time to go, and a single **Take over controls**
     button, which stops the autopilot (PX4 holds where it is) and switches to the manual
     controls below. *Back* returns to the choice.
@@ -137,10 +138,15 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   difference between City footprints and Google's 3D buildings. The HUD's **Building**
   readout gives the distance to the nearest building at the drone's height (amber under
   15 m, red under 5 m). PX4's own physics still doesn't know about buildings.
-- **Settings → Geofence** shows the fence PX4 enforces (read only): status, area (City of
-  Toronto boundary), ceiling, breach action and the current Return height (see the
-  top-level README). The panel only
-  mentions it if the upload failed.
+- **Settings → Geofence** shows the fence PX4 enforces: status, area (City of Toronto
+  boundary), ceiling, breach action and the current Return height (see the top-level
+  README). The panel only mentions it if the upload failed.
+- **Settings → Simulation** sets the simulated drone: speeds (cruise, climb, descent,
+  take-off, landing, keyboard), battery (minutes of hovering, whether the drain follows the
+  load, the low / critical / emergency levels and what PX4 does at critical), the geofence
+  ceiling and breach action, and whether Return lands or hovers at home. *Apply* sends them
+  to the bridge, which checks, saves and applies them to PX4 straight away (see "Sim config"
+  in the top-level README). Route estimates and battery checks use them.
 
 In dev builds `window.viewer` and `window.tdot` (`{ px4, droneView }`) are available in
 the browser console for debugging.

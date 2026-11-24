@@ -45,6 +45,7 @@ class Client:
         self.px4_connected = False
         self.geofence: dict | None = None
         self.return_alt: float | None = None
+        self.config: dict | None = None
         self.acks: dict[str, dict] = {}
         self.states_seen = 0
 
@@ -58,19 +59,25 @@ class Client:
                 self.px4_connected = msg["px4Connected"]
                 self.geofence = msg.get("geofence")
                 self.return_alt = msg.get("returnAltM")
+                self.config = msg.get("config")
                 print(f"Status: PX4 {'connected' if msg['px4Connected'] else 'not connected'} ({msg.get('px4Version')})")
             elif msg["type"] == "ack":
                 self.acks[msg["id"]] = msg
             elif msg["type"] == "notice":
                 print(f"Notice: {msg['message']}")
 
-    async def command(self, action: str, **params):
+    async def command(self, action: str, expect_refusal: bool = False, **params):
         cid = str(uuid.uuid4())
         await self.ws.send(json.dumps({"type": "command", "id": cid, "action": action, **params}))
         ack = await self.until(lambda: self.acks.get(cid), 30, f"ack for {action}")
-        if not ack["ok"]:
+        if expect_refusal:
+            if ack["ok"]:
+                sys.exit(f"FAIL: {action} {params} should have been refused")
+            print(f"{action}: refused as expected ({ack['error']})")
+        elif not ack["ok"]:
             sys.exit(f"FAIL: {action} refused: {ack['error']}")
-        print(f"{action}: accepted")
+        else:
+            print(f"{action}: accepted")
 
     async def until(self, predicate, timeout, what):
         try:
@@ -99,6 +106,16 @@ async def main():
         if not c.geofence["uploaded"]:
             sys.exit(f"FAIL: geofence not uploaded: {c.geofence['error']}")
         print(f"Geofence: {c.geofence['points']}-point boundary, {c.geofence['ceilingM']:.0f} m ceiling")
+
+        # Sim config: bad values are refused; a change is saved and reported (then put back).
+        await c.until(lambda: c.config, 10, "sim config in bridge status")
+        original = c.config["keyboardMs"]
+        await c.command("config", expect_refusal=True, config={"cruiseMs": 99})
+        await c.command("config", expect_refusal=True, config={"batteryCriticalPct": 40})
+        await c.command("config", config={"keyboardMs": original + 1})
+        await c.until(lambda: c.config["keyboardMs"] == original + 1, 10, "changed setting in bridge status")
+        await c.command("config", config={"keyboardMs": original})
+        print(f"Sim config: cruise {c.config['cruiseMs']} m/s, battery {c.config['batteryMin']:.0f} min, ceiling {c.config['ceilingM']:.0f} m")
 
         # Let PX4 finish its pre-arm checks (GPS fix, home) before asking it to fly.
         await c.until(lambda: c.state.get("home") and c.state["flightMode"] != "Unknown", 60, "home position")

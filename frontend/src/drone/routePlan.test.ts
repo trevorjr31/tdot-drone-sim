@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { estimateRoute, formatDistance, formatDuration, formatLatLon, legCrossings, routeSteps, type RouteStart } from './routePlan'
+import { DEFAULT_SIM_CONFIG } from './simConfig'
+import { checkBattery, estimateReturn, estimateRoute, formatDistance, formatDuration, formatLatLon, legCrossings, routeSteps, type RouteStart } from './routePlan'
 
 const ground: RouteStart = { lat: 43.65, lon: -79.38, relAltM: 0, inAir: false }
 // About 800 m east, then 800 m north of that.
@@ -69,5 +70,45 @@ describe('estimate vs a real flight', () => {
     const start = { lat: 43.65255, lon: -79.38330, relAltM: 0, inAir: false }
     expect(estimateRoute(start, steps).timeS).toBeGreaterThan(140)
     expect(estimateRoute(start, steps).timeS).toBeLessThan(170)
+  })
+})
+
+describe('battery estimate', () => {
+  const config = { ...DEFAULT_SIM_CONFIG }
+
+  it('uses about 5% a minute while hovering (20-minute battery)', () => {
+    // A 1.2 km leg at 4 m/s is 5 min, slightly cheaper than hovering while cruising.
+    const air = { ...ground, relAltM: 30, inAir: true }
+    const e = estimateRoute(air, [{ kind: 'fly', stop: 0, dest: { lat: 43.6608, lon: -79.38, label: 'x' }, altM: 30 }], config)
+    expect(e.timeS / 60).toBeCloseTo(5.1, 0)
+    expect(e.battery).toBeGreaterThan(0.22)
+    expect(e.battery).toBeLessThan(0.26)
+  })
+
+  it('charges climbs more than descents', () => {
+    const up = estimateRoute({ ...ground, relAltM: 10, inAir: true }, [{ kind: 'vertical', altM: 70, lat: 0, lon: 0, atStart: true }], config)
+    const down = estimateRoute({ ...ground, relAltM: 70, inAir: true }, [{ kind: 'vertical', altM: 10, lat: 0, lon: 0, atStart: true }], config)
+    expect(up.battery / up.timeS).toBeGreaterThan(down.battery / down.timeS)
+  })
+
+  it('a fixed drain ignores the load', () => {
+    const fixed = { ...config, batteryLoad: false }
+    const e = estimateRoute({ ...ground, relAltM: 10, inAir: true }, [{ kind: 'vertical', altM: 70, lat: 0, lon: 0, atStart: true }], fixed)
+    expect(e.battery).toBeCloseTo(e.timeS / (20 * 60))
+  })
+
+  it('flies home like PX4: climb to the return height, cross, descend, land', () => {
+    const r = estimateReturn(a, ground, 30, 60, config)
+    expect(r.distanceM).toBeGreaterThan(750)
+    // 30 m up (10 s), ~800 m (~3.5 min), 50 m down to 10 m (33 s), land 10 m (~10 s).
+    expect(r.timeS).toBeGreaterThan(230)
+    expect(r.timeS).toBeLessThan(290)
+  })
+
+  it('needs enough to get home with the critical level spare', () => {
+    const route = { distanceM: 0, climbM: 0, timeS: 0, battery: 0.5 }
+    const home = { distanceM: 0, climbM: 0, timeS: 0, battery: 0.3 }
+    expect(checkBattery(1, route, home, config)).toMatchObject({ atEnd: 0.5, ok: true })
+    expect(checkBattery(0.9, route, home, config).ok).toBe(false) // 10% home < 15%
   })
 })

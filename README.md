@@ -59,11 +59,36 @@ doesn't take the bridge's network down.
 Don't run `bridge_test.py` with the app open: the app's collision check would react to
 the test drone (and could cut its motors).
 
+### Sim config
+
+The simulated drone's settings live in the bridge, which saves them (in the
+`bridge-config` Docker volume) and applies them to PX4's parameters whenever PX4
+(re)connects and whenever they change, even mid-flight. Change them in the app under
+**Settings → Simulation**; they're sent as a `config` command and the bridge checks them
+first (ranges, and battery levels in order). Defaults are PX4's own, apart from the battery
+and failsafes:
+
+| Setting | Default | PX4 parameter |
+| --- | --- | --- |
+| Cruise speed (fly-to, routes, Return) | 5 m/s | `MPC_XY_CRUISE` |
+| Climb / descent on autopilot | 3 / 1.5 m/s | `MPC_Z_V_AUTO_UP` / `_DN` (and the `MPC_Z_VEL_MAX_*` limits) |
+| Take-off / landing speed | 1.5 / 0.7 m/s | `MPC_TKO_SPEED` / `MPC_LAND_SPEED` |
+| Keyboard speed | 6 m/s | (the app's keyboard flying) |
+| Battery: minutes of hovering, drain follows the load | 20 min, on | `SIM_BAT_DRAIN` (see Battery) |
+| Battery levels: low / critical / emergency | 25 / 15 / 5% | `BAT_LOW_THR` / `BAT_CRIT_THR` / `BAT_EMERGEN_THR` |
+| At critical: Return then land at emergency, land, or only warn | Return | `COM_LOW_BAT_ACT` |
+| Geofence ceiling above home | 120 m | `GF_MAX_VER_DIST` |
+| On a breach: Return, hold, land, or only warn | Return | `GF_ACTION` |
+| After Return reaches home: land or hover | land | `RTL_LAND_DELAY` |
+
+`FENCE_CEILING_M` and `BATTERY_FLIGHT_MIN` in `docker-compose.yml` set the defaults until
+something is saved; `docker compose down -v` forgets the saved settings.
+
 ### Geofence
 
 Whenever PX4 (re)connects, the bridge uploads the City of Toronto boundary as an
-inclusion geofence and sets a **120 m ceiling** above home (the drone limit is 122 m), with
-**Return** as the breach action. PX4 enforces it itself, with or without a browser open.
+inclusion geofence with the ceiling above home (120 m by default; the drone limit is
+122 m) and the breach action (Return by default) from the sim config. PX4 enforces it itself, with or without a browser open.
 The fence comes from `frontend/public/data/toronto/boundary-fence.geojson` (made by
 `npm run data`, mounted read-only into the bridge). PX4 stores at most 64 fence points,
 so the boundary is simplified to ~50 points, within about 500 m of the true line.
@@ -72,12 +97,12 @@ so the boundary is simplified to ~50 points, within about 500 m of the true line
 
 PX4's Return mode climbs to its return height and flies **straight** home, without knowing
 about buildings, and near home its "return cone" lets it come back lower still. So on every
-(re)connect the bridge turns the cone off and sets a high, safe default (115 m, just under
-the ceiling). While the app is open it works out the safe height for the straight line from
+(re)connect the bridge turns the cone off and sets a high, safe default (5 m under the
+ceiling, 115 m by default). While the app is open it works out the safe height for the straight line from
 the drone to home (10 m above the tallest City building on it) and sends it as `returnAlt`
 every time it changes; PX4 climbs to it on the spot before heading home, whatever starts
 the return (the Return button, a geofence breach, a PX4 failsafe). If a building on the way
-is too tall to clear under 115 m, the app warns in the drone panel. With the app closed,
+is too tall to clear under that, the app warns in the drone panel. With the app closed,
 PX4 keeps the last height it was given.
 
 If PX4 takes over while you're flying with the keyboard (geofence, failsafe), the bridge
@@ -89,16 +114,21 @@ count as a pilot takeover and cancel PX4's failsafe.
 PX4's simulated battery drains while armed and refills when the drone disarms. Out of the
 box it stops at 50%, so it never runs out, and it drains at one fixed rate whatever the
 drone is doing. The bridge lets it run down to 0% and, about once a second, sets the drain
-rate from the load: 20 minutes of hovering from full to empty (`BATTERY_FLIGHT_MIN`), about
-a third of that rate idling armed on the ground, up to twice it climbing (at 4 m/s), a bit
-less descending or cruising at ~8 m/s, and more again flying faster. It also sets PX4's
-responses with time to act on them: a warning at 25%, **Return home** at 15%, and **landing where it
-is** at 5% (over a building that means onto the roof, which the app counts as a crash).
-PX4 does all of this itself, app or no app. The app shows the minutes left in the HUD
-(estimated from how fast the battery is dropping) and warns in the drone panel at each
-level. To try it quickly, give it a 2-minute battery:
-`BATTERY_FLIGHT_MIN=2 docker compose up -d --force-recreate bridge px4` (and the same
-without the variable to put it back).
+rate from the load: 20 minutes of hovering from full to empty (by default), about a third
+of that rate idling armed on the ground, up to twice it climbing (at 4 m/s), a bit less
+descending or cruising at ~8 m/s, and more again flying faster (turn "Drain follows the
+load" off for a fixed rate). It also sets PX4's responses with time to act on them: a
+warning at 25%, **Return home** at 15%, and **landing where it is** at 5% (over a building
+that means onto the roof, which the app counts as a crash). PX4 does all of this itself,
+app or no app. The app shows the minutes left in the HUD (estimated from how fast the
+battery is dropping) and warns in the drone panel at each level.
+
+Planned routes are checked before take-off: the app estimates the battery for the route
+and for PX4's Return home from the last stop (with the same load model, at the configured
+speeds) and refuses routes that would get home with less than the critical level. In the
+sim, a short route came within a few percent: it arrived with 67% (62% predicted), and the
+flight home used 34% (33% predicted). To try the limits, set a short battery under
+Settings → Simulation.
 
 ### Smoke tests
 
@@ -107,6 +137,7 @@ directly over MAVLink; `bridge_test.py` goes through the bridge's WebSocket exac
 browser does: it checks the geofence is loaded and the 20 Hz state rate, flies forward
 with keyboard-style velocity messages, checks the hover and hand-back to Hold, flies to a
 point 60 m north, sets a return height and checks Return climbs to it before heading home,
+checks bad sim settings are refused and a good one is saved and reported,
 climbs into the 120 m ceiling and checks PX4 switches to Return, then crashes (motors cut:
 it must fall and disarm) and resets (back at home, geofence re-uploaded, return height back
 to the safe default):
@@ -136,9 +167,9 @@ WebSocket protocol (see [sim/bridge/bridge.py](sim/bridge/bridge.py)):
 
 | Direction | Message |
 |---|---|
-| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…},"returnAltM":99}` on connect and on change |
+| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…},"returnAltM":99,"config":{…}}` on connect and on change (`config`: the sim settings) |
 | bridge → app | `{"type":"state","state":{…}}` at 20 Hz, same fields as the app's `DroneState` |
-| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `crash`, `reset`, `returnAlt` with `relAltM`: Return's height, doesn't interrupt keyboard flying) |
+| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `crash`, `reset`, `returnAlt` with `relAltM`: Return's height, doesn't interrupt keyboard flying; `config` with some sim settings: checked, saved and applied, works without PX4) |
 | bridge → app | `{"type":"ack","id":"…","ok":false,"error":"…"}` with PX4's reason if refused |
 | app → bridge | `{"type":"velocity","forwardMs":5,"rightMs":0,"downMs":0,"yawRateDegS":0}` ~10 Hz while keys are held (keyboard flying; body frame, down positive) |
 | bridge → app | `{"type":"notice","level":"error","message":"…"}` e.g. "Take off first" |

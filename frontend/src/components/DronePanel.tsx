@@ -1,15 +1,15 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
-import { BATTERY_CRITICAL, BATTERY_EMERGENCY, formatMinutes, type BatteryInfo } from '../drone/battery'
+import { formatMinutes, type BatteryInfo } from '../drone/battery'
+import type { SimConfig } from '../drone/simConfig'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
 import { formatDistance, formatDuration, ROUTE_MAX_STOPS, type RouteEstimate } from '../drone/routePlan'
 import {
   crossingAltM,
-  RETURN_MAX_ALT_M,
-  ROUTE_MAX_ALT_M,
   routeProblem,
   type Mission,
   type ReturnPlan,
+  type RouteBattery,
   type RouteCheckInfo,
   type RouteProgress,
 } from '../drone/useDrone'
@@ -48,6 +48,12 @@ type Props = {
     onStartRoute: (altM: number) => void
     /** How far and how long the route being planned is. */
     routeEstimate: RouteEstimate | null
+    /** Its battery: the route plus the flight home, and whether that's enough. */
+    routeBattery: RouteBattery | null
+    /** Geofence height ceiling above home (from the sim config). */
+    ceilingM: number
+    /** The simulated drone's settings (battery levels and what PX4 does at them). */
+    simConfig: SimConfig
     /** Where the autopilot is in a planned route. */
     routeProgress: RouteProgress | null
     /** Buildings along the route (while planning). */
@@ -253,12 +259,23 @@ function RoutePlanner(
             />
             m above {p.airborne ? 'home' : 'the launch point'}
           </label>
-          <RouteCheck check={p.routeCheck} altM={altM} currentAltM={p.currentAltM} onUse={setAltM} stops={p.routeStops.length} />
-          {!tooHigh(p.routeCheck) && <RouteSummary estimate={p.routeEstimate} battery={p.battery} stops={p.routeStops.length} />}
+          <RouteCheck
+            check={p.routeCheck}
+            altM={altM}
+            currentAltM={p.currentAltM}
+            onUse={setAltM}
+            stops={p.routeStops.length}
+            ceilingM={p.ceilingM}
+          />
+          {!tooHigh(p.routeCheck, p.ceilingM) && (
+            <RouteSummary estimate={p.routeEstimate} battery={p.routeBattery} stops={p.routeStops.length} />
+          )}
           <button
             type="button"
             className="btn btn--primary btn--block"
-            disabled={!p.ready || p.busy !== null || routeBlocked(p.routeCheck, altM)}
+            disabled={
+              !p.ready || p.busy !== null || routeBlocked(p.routeCheck, altM, p.ceilingM) || p.routeBattery?.ok === false
+            }
             onClick={() => p.onStartRoute(altM)}
           >
             {p.airborne ? 'Fly there' : p.busy === 'takeoff' ? 'Taking off…' : 'Take off'}
@@ -289,7 +306,7 @@ function FlightControls(p: Props['px4']) {
         </button>
       </div>
 
-      <BatteryWarning battery={p.battery} />
+      <BatteryWarning battery={p.battery} config={p.simConfig} />
       <ReturnWarning plan={p.returnPlan} />
 
       {below && (
@@ -388,7 +405,7 @@ function Autopilot(p: Props['px4']) {
           {formatDistance(r.remaining.distanceM)} to go · about {formatDuration(r.remaining.timeS)}
         </div>
       )}
-      <BatteryWarning battery={p.battery} />
+      <BatteryWarning battery={p.battery} config={p.simConfig} />
       <ReturnWarning plan={p.returnPlan} />
       <button type="button" className="btn btn--primary btn--block" onClick={p.onTakeOver} disabled={p.busy === 'hold'}>
         Take over controls
@@ -399,26 +416,35 @@ function Autopilot(p: Props['px4']) {
 }
 
 /** Low battery: what PX4 will do (or is doing) about it, and how long until it does. */
-function BatteryWarning({ battery: b }: { battery: BatteryInfo | null }) {
+function BatteryWarning({ battery: b, config: c }: { battery: BatteryInfo | null; config: SimConfig }) {
   if (!b || b.level === 'ok') return null
-  const pct = (x: number) => `${Math.round(x * 100)}%`
+  // What PX4 does at the critical level (Settings → Simulation).
+  const act = { return: 'flies home', land: 'lands where it is', warn: "only warns (it won't act)" }[c.lowBatteryAction]
+  const acting = { return: 'PX4 is flying home.', land: 'PX4 is landing where it is.', warn: 'Land now: PX4 is set to only warn.' }[
+    c.lowBatteryAction
+  ]
   if (b.level === 'emergency')
     return (
       <div className="drone-panel__check is-bad" role="alert">
-        <strong>Battery empty:</strong> PX4 is landing where it is.
+        <strong>Battery empty:</strong>{' '}
+        {c.lowBatteryAction === 'warn' ? 'land now, PX4 is set to only warn.' : 'PX4 is landing where it is.'}
       </div>
     )
   if (b.level === 'critical')
     return (
       <div className="drone-panel__check is-bad" role="alert">
-        <strong>Battery critical:</strong> PX4 is flying home.{' '}
-        {b.minToLand !== null && <>At {pct(BATTERY_EMERGENCY)} ({formatMinutes(b.minToLand)}) it lands wherever it is.</>}
+        <strong>Battery critical:</strong> {acting}{' '}
+        {c.lowBatteryAction === 'return' && b.minToLand !== null && (
+          <>
+            At {c.batteryEmergencyPct}% ({formatMinutes(b.minToLand)}) it lands wherever it is.
+          </>
+        )}
       </div>
     )
   return (
     <div className="drone-panel__check is-warn" role="alert">
-      <strong>Battery low:</strong> head home soon. At {pct(BATTERY_CRITICAL)}
-      {b.minToReturn !== null && <> ({formatMinutes(b.minToReturn)})</>} PX4 flies home on its own.
+      <strong>Battery low:</strong> head home soon. At {c.batteryCriticalPct}%
+      {b.minToReturn !== null && <> ({formatMinutes(b.minToReturn)})</>} PX4 {act}.
     </div>
   )
 }
@@ -429,20 +455,20 @@ function ReturnWarning({ plan }: { plan: ReturnPlan | null }) {
   return (
     <div className="drone-panel__check is-bad" role="alert">
       No safe return from here: <strong>{plan.highest.name ?? 'a building'}</strong> ({plan.highest.heightM} m) is in the way
-      home, too tall to clear under {RETURN_MAX_ALT_M} m. Move away from it before Return (or a geofence return).
+      home, too tall to clear under {plan.maxM} m. Move away from it before Return (or a geofence return).
     </div>
   )
 }
 
 /** The route can't be flown at any height under the ceiling (no point estimating it). */
-function tooHigh(c: RouteCheckInfo | null): boolean {
-  return c?.status === 'done' && c.minSafeRelAltM > ROUTE_MAX_ALT_M
+function tooHigh(c: RouteCheckInfo | null, ceilingM: number): boolean {
+  return c?.status === 'done' && c.minSafeRelAltM > ceilingM
 }
 
 /** Whether the route's height is unsafe (or still being checked). */
-function routeBlocked(c: RouteCheckInfo | null, altM: number): boolean {
+function routeBlocked(c: RouteCheckInfo | null, altM: number, ceilingM: number): boolean {
   if (c?.status === 'checking') return true
-  return c?.status === 'done' && routeProblem(c, altM) !== null
+  return c?.status === 'done' && routeProblem(c, altM, ceilingM) !== null
 }
 
 /** The buildings along the route vs the chosen height. */
@@ -452,6 +478,7 @@ function RouteCheck({
   currentAltM,
   onUse,
   stops,
+  ceilingM,
 }: {
   check: RouteCheckInfo | null
   altM: number
@@ -459,6 +486,7 @@ function RouteCheck({
   onUse: (m: number) => void
   /** Number of stops (the text differs for a multi-stop route). */
   stops: number
+  ceilingM: number
 }) {
   if (!c) return null
   if (c.status === 'checking') return <div className="drone-panel__hint">Checking the buildings along the route…</div>
@@ -471,11 +499,11 @@ function RouteCheck({
     </>
   )
   const what = name(c.highest)
-  const problem = routeProblem(c, altM)
+  const problem = routeProblem(c, altM, ceilingM)
   if (problem?.kind === 'ceiling')
     return (
       <div className="drone-panel__check is-bad">
-        The route passes {what}: too tall to clear under the {ROUTE_MAX_ALT_M} m ceiling. Choose another destination.
+        The route passes {what}: too tall to clear under the {ceilingM} m ceiling. Choose another destination.
       </div>
     )
   if (problem)
@@ -511,10 +539,14 @@ function RouteCheck({
   )
 }
 
-/** The planned route's length and flight time, and whether the battery lasts that long. */
-function RouteSummary({ estimate: e, battery, stops }: { estimate: RouteEstimate | null; battery: BatteryInfo | null; stops: number }) {
+/**
+ * The planned route's length, flight time and battery: what's left at the last stop and
+ * back home after it (PX4's Return). Take off is refused when home would be under the
+ * reserve (the critical level, where PX4 acts on its own).
+ */
+function RouteSummary({ estimate: e, battery: b, stops }: { estimate: RouteEstimate | null; battery: RouteBattery | null; stops: number }) {
   if (!e) return null
-  const short = battery?.minToReturn != null && e.timeS / 60 > battery.minToReturn
+  const pct = (x: number) => `${Math.max(0, Math.round(x * 100))}%`
   return (
     <>
       <div className="drone-panel__summary" aria-label="Route estimate">
@@ -525,9 +557,16 @@ function RouteSummary({ estimate: e, battery, stops }: { estimate: RouteEstimate
           about <strong>{formatDuration(e.timeS)}</strong>
         </span>
       </div>
-      {short && (
-        <div className="drone-panel__check is-warn">
-          Not enough battery: PX4 will turn for home in {formatMinutes(battery!.minToReturn!)}, before this route ends.
+      {b && (
+        <div
+          className={`drone-panel__check ${b.ok ? (b.atHome < b.reserve + 0.1 ? 'is-warn' : 'is-ok') : 'is-bad'}`}
+          aria-label="Battery estimate"
+        >
+          <span>
+            Battery {pct(b.now)} → <strong>{pct(b.atEnd)}</strong> at the {stops > 1 ? 'last stop' : 'destination'},{' '}
+            <strong>{pct(b.atHome)}</strong> back home ({formatDuration(b.home.timeS)} more).
+            {!b.ok && <> Not enough: it must get home with at least {pct(b.reserve)}. Choose fewer or nearer stops.</>}
+          </span>
         </div>
       )}
     </>

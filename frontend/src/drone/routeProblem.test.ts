@@ -9,6 +9,7 @@ const check: Extract<RouteCheckInfo, { status: 'done' }> = {
   destMinSafeRelAltM: 20,
   destHighest: { name: 'Podium', heightM: 8 },
   legMinSafeM: [99],
+  returnMinSafeM: 99,
 }
 
 describe('routeProblem', () => {

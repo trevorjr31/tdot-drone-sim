@@ -3,6 +3,7 @@ import { CesiumViewer, type TilesStatus } from './components/CesiumViewer'
 import { DroneHud } from './components/DroneHud'
 import { DronePanel } from './components/DronePanel'
 import { GeofenceInfo } from './components/GeofenceInfo'
+import { SimSettings } from './components/SimSettings'
 import { LayerList } from './components/LayerList'
 import { SettingsMenu, SettingsSection } from './components/SettingsMenu'
 import { useDrone } from './drone/useDrone'
@@ -104,7 +105,20 @@ function App() {
           </ul>
         </SettingsSection>
         <SettingsSection title="Geofence">
-          <GeofenceInfo status={drone.panel.px4.status} geofence={drone.panel.px4.geofence} returnPlan={drone.returnPlan} />
+          <GeofenceInfo
+            status={drone.panel.px4.status}
+            geofence={drone.panel.px4.geofence}
+            returnPlan={drone.returnPlan}
+            config={drone.simConfig}
+          />
+        </SettingsSection>
+        <SettingsSection title="Simulation">
+          <SimSettings
+            key={JSON.stringify(drone.simConfig)}
+            config={drone.simConfig}
+            onSave={drone.updateSimConfig}
+            canSave={drone.panel.px4.status === 'connected' || drone.panel.px4.status === 'px4-offline'}
+          />
         </SettingsSection>
         <p className="layer-panel__footer">
           City data:{' '}
