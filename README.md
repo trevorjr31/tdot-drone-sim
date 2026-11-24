@@ -88,6 +88,14 @@ and failsafes:
 `FENCE_CEILING_M` and `BATTERY_FLIGHT_MIN` in `docker-compose.yml` set the defaults until
 something is saved; `docker compose down -v` forgets the saved settings.
 
+The bridge sets these (and the battery drain rate and Return height) as PX4's *defaults*,
+through PX4's console over MAVLink (`param set-default`), not as normal parameter changes.
+PX4 saves its parameters to a file after every normal change, and a change landing while
+it was saving once froze PX4's MAVLink; the battery drain changes about once a second in
+flight, so that happened now and then. Defaults take effect straight away and are never
+saved; the bridge clears any saved values for them on connect and sets them again every
+time PX4 (re)connects.
+
 ### Geofence
 
 Whenever PX4 (re)connects, the bridge uploads the City of Toronto boundary as an

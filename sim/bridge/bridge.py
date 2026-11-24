@@ -45,6 +45,14 @@ and applies them to PX4's parameters, now and on every PX4 (re)connect. Unlike o
 commands, "config" works while PX4 is away (applied when it's back) and doesn't
 interrupt keyboard flying.
 
+Setting PX4's parameters: PX4 saves its parameters to a file after every change, and a
+change that lands while it's saving makes the save fail its check; once, that froze
+PX4's MAVLink for good. The battery drain changes about once a second in flight, so the
+bridge never changes parameters the normal way: it sets them as PX4's *defaults* through
+the MAVLink shell (`param set-default`), which takes effect straight away and is never
+saved. On connect it clears any saved values for these parameters once (`param reset`),
+so the defaults apply, and it sets them all again on every connect anyway.
+
 Battery: PX4's simulated battery drains at a set rate while armed (SIM_BAT_DRAIN, the
 seconds from full to empty) and refills on disarm. By default it stops at 50%, so the
 bridge lets it run down to 0% and sets PX4's low-battery responses: a warning at 25%,
@@ -64,6 +72,7 @@ import time
 from mavsdk_grpc import System
 from mavsdk_grpc.geofence import FenceType, GeofenceData, Point, Polygon
 from mavsdk_grpc.offboard import VelocityBodyYawspeed
+from mavsdk_grpc.shell import Device
 from websockets.asyncio.server import ServerConnection, broadcast, serve
 from websockets.exceptions import ConnectionClosed
 
@@ -118,6 +127,15 @@ CONFIG_SPEC: dict[str, tuple] = {
     # After Return reaches home: land, or hover there (RTL_LAND_DELAY).
     "afterReturn": (("land", "hover"), "land"),
 }
+# How long to wait for PX4's console prompt after a command.
+SHELL_TIMEOUT_S = 3.0
+# Every parameter the bridge sets (as defaults, see "Setting PX4's parameters" above).
+MANAGED_PARAMS = [
+    "MPC_XY_CRUISE", "MPC_Z_VEL_MAX_UP", "MPC_Z_VEL_MAX_DN", "MPC_Z_V_AUTO_UP", "MPC_Z_V_AUTO_DN",
+    "MPC_TKO_SPEED", "MPC_LAND_SPEED", "SIM_BAT_DRAIN", "SIM_BAT_MIN_PCT", "BAT_LOW_THR", "BAT_CRIT_THR",
+    "BAT_EMERGEN_THR", "GF_MAX_VER_DIST", "RTL_LAND_DELAY", "COM_LOW_BAT_ACT", "GF_ACTION", "RTL_CONE_ANG",
+    "RTL_RETURN_ALT",
+]
 # PX4 values for the choices.
 LOW_BATTERY_ACTIONS = {"warn": 0, "land": 2, "return": 3}  # COM_LOW_BAT_ACT (3: Return, then land at emergency)
 FENCE_ACTIONS = {"warn": 1, "hold": 2, "return": 3, "land": 5}  # GF_ACTION
@@ -245,6 +263,8 @@ class Bridge:
         # Battery drain vs load (see drain_factor): smoothed factor and the last one sent to PX4.
         self.drain_load = 1.0
         self.drain_sent: float | None = None
+        self.shell_lock = asyncio.Lock()
+        self.shell_prompt = asyncio.Event()
         self.offboard_started_at = 0.0
         # PX4 left offboard on its own (geofence, failsafe, …). Restarting offboard while keys are
         # still held would count as a pilot takeover and cancel PX4's failsafe, so wait for a release.
@@ -288,6 +308,7 @@ class Bridge:
             ("in_air", self.watch_in_air),
             ("flight_mode", self.watch_flight_mode),
             ("home", self.watch_home),
+            ("shell", self.watch_shell),
         ]:
             asyncio.create_task(self.keep_watching(name, stream))
 
@@ -370,12 +391,49 @@ class Bridge:
     def return_alt_max(self) -> float:
         return self.config["ceilingM"] - RETURN_BELOW_CEILING_M
 
+    async def px4_shell(self, command: str) -> None:
+        """
+        Runs a command on PX4's console over MAVLink, one at a time: PX4 drops commands sent
+        while it's still busy, so wait for its prompt (pxh>) before the next.
+        """
+        async with self.shell_lock:
+            self.shell_prompt.clear()
+            await self.drone.shell.send(command, Device.SHELL)
+            try:
+                await asyncio.wait_for(self.shell_prompt.wait(), SHELL_TIMEOUT_S)
+            except TimeoutError:
+                log.warning("PX4 console didn't answer: %s", command)
+
+    async def set_param(self, name: str, value: float | int) -> None:
+        """Sets a PX4 parameter as its default: effective now, never saved (see the docstring)."""
+        text = str(value) if isinstance(value, int) else f"{float(value):.6g}"
+        try:
+            await self.px4_shell(f"param set-default {name} {text}")
+        except Exception as e:  # noqa: BLE001 - no shell: fall back to a normal (saved) change
+            log.warning("PX4 shell unavailable (%s); setting %s the normal way", e, name)
+            if isinstance(value, int):
+                await self.drone.param.set_param_int(name, value)
+            else:
+                await self.drone.param.set_param_float(name, float(value))
+
+    async def watch_shell(self) -> None:
+        """Logs problems PX4's console reports for the bridge's commands."""
+        async for out in self.drone.shell.receive():
+            text = getattr(out, "data", str(out))
+            if "pxh>" in text:
+                self.shell_prompt.set()
+            for line in text.splitlines():
+                if any(w in line.lower() for w in ("error", "failed", "not found", "invalid")):
+                    log.warning("PX4 console: %s", line.strip())
+
     async def setup_px4(self) -> None:
-        """On connect: Return always climbs to its height (no cone), starting high; then the sim config."""
+        """On connect: clear saved values, Return always climbs to its height (no cone), starting high; then the sim config."""
         self.return_alt = None
         try:
-            await self.drone.param.set_param_int("RTL_CONE_ANG", 0)
-            await self.drone.param.set_param_float("SIM_BAT_MIN_PCT", 0.0)  # PX4's default stops at 50%
+            # Saved values would override the defaults the bridge sets; one save, before anything flies.
+            await self.px4_shell("param reset " + " ".join(MANAGED_PARAMS))
+            await self.set_param("RTL_CONE_ANG", 0)
+            await self.set_param("SIM_BAT_MIN_PCT", 0.0)  # PX4's default stops at 50%
             await self.set_return_alt(self.return_alt_max)
         except Exception as e:  # noqa: BLE001
             log.warning("Could not set up Return home: %s", e)
@@ -406,9 +464,9 @@ class Bridge:
         ]
         try:
             for name, value in floats:
-                await self.drone.param.set_param_float(name, float(value))
+                await self.set_param(name, float(value))
             for name, value in ints:
-                await self.drone.param.set_param_int(name, value)
+                await self.set_param(name, int(value))
             self.drain_sent = None  # the load loop re-sends the drain rate
             self.geofence["ceilingM"] = c["ceilingM"]
             # A lower ceiling: keep Return under it (the app sends a building-aware height again).
@@ -451,7 +509,7 @@ class Bridge:
             if sent is not None and abs(self.drain_load - sent) / sent < BATTERY_LOAD_MIN_CHANGE:
                 continue
             try:
-                await self.drone.param.set_param_float("SIM_BAT_DRAIN", self.config["batteryMin"] * 60 / self.drain_load)
+                await self.set_param("SIM_BAT_DRAIN", self.config["batteryMin"] * 60 / self.drain_load)
                 self.drain_sent = self.drain_load
                 log.debug("Battery drain ×%.2f", self.drain_load)
             except Exception as e:  # noqa: BLE001 - e.g. PX4 restarting
@@ -461,7 +519,7 @@ class Bridge:
         alt = round(max(RETURN_ALT_MIN_M, min(self.return_alt_max, rel_alt_m)), 1)
         if alt == self.return_alt:
             return
-        await self.drone.action.set_return_to_launch_altitude(alt)
+        await self.set_param("RTL_RETURN_ALT", alt)
         log.debug("Return height %.0f m", alt)
         self.return_alt = alt
         self.broadcast_status()
