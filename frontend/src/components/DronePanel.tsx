@@ -1,10 +1,21 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { FlyToTarget } from '../drone/droneView'
+import { formatMinutes, type BatteryInfo } from '../drone/battery'
+import type { SimConfig } from '../drone/simConfig'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
-import type { Mission } from '../drone/useDrone'
+import { formatDistance, formatDuration, ROUTE_MAX_STOPS, type RouteEstimate } from '../drone/routePlan'
+import {
+  crossingAltM,
+  routeProblem,
+  type Mission,
+  type ReturnPlan,
+  type RouteBattery,
+  type RouteCheckInfo,
+  type RouteProgress,
+} from '../drone/useDrone'
 
 type Props = {
-  /** Search box shown in Plan a route, under Pick on map (picking a result sets the destination). */
+  /** Search box shown in Plan a route, under Pick on map (picking a result adds it as a stop). */
   routeSearch: ReactNode
   /** Hit a building: flying is over until Reset. */
   crashed: boolean
@@ -26,12 +37,33 @@ type Props = {
     onFreeFly: () => void
     onPlanRoute: () => void
     onBack: () => void
-    routeDest: FlyToTarget | null
-    onPickRouteDest: () => void
-    onClearRouteDest: () => void
+    /** The route being planned: its stops, in order (the last is the destination). */
+    routeStops: FlyToTarget[]
+    /** Add a stop by clicking the map. */
+    onPickRouteStop: () => void
+    onRemoveStop: (i: number) => void
+    onMoveStopUp: (i: number) => void
+    /** The planner's chosen height changed (for the estimate and the route preview on the map). */
+    onPlanAltM: (altM: number) => void
     onStartRoute: (altM: number) => void
-    /** Planned route: still climbing to height before setting off. */
-    routeClimbing: boolean
+    /** How far and how long the route being planned is. */
+    routeEstimate: RouteEstimate | null
+    /** Its battery: the route plus the flight home, and whether that's enough. */
+    routeBattery: RouteBattery | null
+    /** Geofence height ceiling above home (from the sim config). */
+    ceilingM: number
+    /** The simulated drone's settings (battery levels and what PX4 does at them). */
+    simConfig: SimConfig
+    /** Where the autopilot is in a planned route. */
+    routeProgress: RouteProgress | null
+    /** Buildings along the route (while planning). */
+    routeCheck: RouteCheckInfo | null
+    /** The building directly below the drone, if any (for the landing warning). */
+    overBuilding: { name: string | null; heightM: number } | null
+    /** Return home's height, kept clear of buildings; `safe` false when no straight return clears them. */
+    returnPlan: ReturnPlan | null
+    /** Battery level and minutes left, while flying. */
+    battery: BatteryInfo | null
     /** The autopilot is flying a planned route. */
     autopilot: boolean
     onTakeOver: () => void
@@ -73,7 +105,9 @@ export function DronePanel(props: Props) {
 
   let body
   if (props.crashed) body = <CrashBox resetting={p.busy === 'reset'} error={p.error} onReset={props.onReset} />
-  else if (flying && p.autopilot) body = <Autopilot {...p} />
+  // Free fly / autopilot chosen: stay on that screen from the moment take-off is sent,
+  // not only once telemetry reports the drone armed (that lags PX4's answer by a second or two).
+  else if (p.autopilot) body = <Autopilot {...p} />
   else if (p.mission === 'route')
     body = (
       <RoutePlanner
@@ -82,15 +116,26 @@ export function DronePanel(props: Props) {
         search={props.routeSearch}
         airborne={props.inAir}
         initialAltM={props.inAir && props.relAltM !== null ? props.relAltM : 30}
+        currentAltM={props.inAir ? props.relAltM : null}
       />
     )
-  else if (flying) body = <FlightControls {...p} />
+  else if (flying || p.mission === 'free') body = <FlightControls {...p} />
   else body = <ChooseMission {...p} ready={ready} />
 
   return (
     <section className={`layer-panel drone-panel${open ? '' : ' is-collapsed'}`} aria-label="Drone">
-      <button type="button" className="layer-panel__header" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <span>Drone</span>
+      <button
+        type="button"
+        className="layer-panel__header"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-label={`Drone: ${STATUS_TEXT[p.status]}. ${open ? 'Hide' : 'Show'} the drone controls`}
+      >
+        <span className={`drone-panel__status is-${p.status}`}>
+          <span className="drone-panel__dot" aria-hidden />
+          {STATUS_TEXT[p.status]}
+          {ready && p.version ? ` · PX4 ${p.version}` : ''}
+        </span>
         <span className="layer-panel__chevron" aria-hidden>
           {open ? '▾' : '▸'}
         </span>
@@ -114,16 +159,10 @@ export function DronePanel(props: Props) {
 function Status(p: Props['px4'] & { ready: boolean }) {
   return (
     <>
-      <div className={`drone-panel__status is-${p.status}`}>
-        <span className="drone-panel__dot" aria-hidden />
-        {STATUS_TEXT[p.status]}
-        {p.ready && p.version ? ` · PX4 ${p.version}` : ''}
-      </div>
-      {p.ready && p.geofence && (
-        <div className={`drone-panel__fence${p.geofence.uploaded ? '' : ' is-missing'}`} title={p.geofence.error ?? undefined}>
-          {p.geofence.uploaded
-            ? `Geofence: City of Toronto boundary · ${p.geofence.ceilingM.toFixed(0)} m ceiling · breach returns home`
-            : `No geofence: ${p.geofence.error ?? 'not uploaded'}`}
+      {/* The geofence details are in Settings; only a missing fence is worth flagging here. */}
+      {p.ready && p.geofence && !p.geofence.uploaded && (
+        <div className="drone-panel__fence is-missing" title={p.geofence.error ?? undefined}>
+          No geofence: {p.geofence.error ?? 'not uploaded'}
         </div>
       )}
       {p.status === 'bridge-offline' && (
@@ -155,8 +194,12 @@ function ChooseMission(p: Props['px4'] & { ready: boolean }) {
  * Plan a route: destination first, then height and Take off. Also opened in the air from
  * the manual controls, where the button is Fly there and Back returns to the controls.
  */
-function RoutePlanner(p: Props['px4'] & { ready: boolean; search: ReactNode; airborne: boolean; initialAltM: number }) {
+function RoutePlanner(
+  p: Props['px4'] & { ready: boolean; search: ReactNode; airborne: boolean; initialAltM: number; currentAltM: number | null },
+) {
   const [altM, setAltM] = useState(() => Math.max(5, Math.min(120, Math.round(p.initialAltM))))
+  const { onPlanAltM } = p
+  useEffect(() => onPlanAltM(altM), [altM, onPlanAltM])
   return (
     <>
       <div className="drone-panel__label">
@@ -166,20 +209,33 @@ function RoutePlanner(p: Props['px4'] & { ready: boolean; search: ReactNode; air
         </button>
       </div>
 
-      <div className="drone-panel__step">Destination</div>
-      {p.routeDest ? (
-        <div className="drone-panel__dest">
-          <span className="btn__ellipsis" title={p.routeDest.label}>
-            {p.routeDest.label}
-          </span>
-          <button type="button" className="btn btn--small" onClick={p.onClearRouteDest}>
-            Change
-          </button>
-        </div>
-      ) : (
+      <div className="drone-panel__step">{p.routeStops.length > 1 ? 'Stops' : 'Destination'}</div>
+      {p.routeStops.length > 0 && (
+        <ol className="drone-panel__stops">
+          {p.routeStops.map((stop, i) => (
+            <li key={`${i}:${stop.lat},${stop.lon}`} className="drone-panel__dest">
+              {p.routeStops.length > 1 && <span className="drone-panel__stop-num">{i + 1}</span>}
+              <span className="drone-panel__stop-name" title={stop.label}>
+                <span className="btn__ellipsis">{stop.label}</span>
+                {stop.building && <span className="drone-panel__stop-tag">Building · {stop.building.heightM} m</span>}
+              </span>
+              {i > 0 && (
+                <button type="button" className="btn btn--small" onClick={() => p.onMoveStopUp(i)} aria-label={`Move ${stop.label} earlier`} title="Move earlier">
+                  ↑
+                </button>
+              )}
+              <button type="button" className="btn btn--small" onClick={() => p.onRemoveStop(i)} aria-label={`Remove ${stop.label}`} title="Remove">
+                ×
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      {p.routeStops.length < ROUTE_MAX_STOPS && (
         <>
+          {p.routeStops.length > 0 && <div className="drone-panel__or">Add a stop</div>}
           <div className="drone-panel__buttons">
-            <button type="button" className="btn" onClick={p.onPickRouteDest} disabled={p.picking}>
+            <button type="button" className="btn" onClick={p.onPickRouteStop} disabled={p.picking}>
               {p.picking ? 'Click the map… (Esc)' : 'Pick on map'}
             </button>
           </div>
@@ -188,7 +244,7 @@ function RoutePlanner(p: Props['px4'] & { ready: boolean; search: ReactNode; air
         </>
       )}
 
-      {p.routeDest && (
+      {p.routeStops.length > 0 && (
         <>
           <div className="drone-panel__step">Height</div>
           <label className="drone-panel__alt" title="Height above the launch point to fly at">
@@ -203,10 +259,23 @@ function RoutePlanner(p: Props['px4'] & { ready: boolean; search: ReactNode; air
             />
             m above {p.airborne ? 'home' : 'the launch point'}
           </label>
+          <RouteCheck
+            check={p.routeCheck}
+            altM={altM}
+            currentAltM={p.currentAltM}
+            onUse={setAltM}
+            stops={p.routeStops.length}
+            ceilingM={p.ceilingM}
+          />
+          {!tooHigh(p.routeCheck, p.ceilingM) && (
+            <RouteSummary estimate={p.routeEstimate} battery={p.routeBattery} stops={p.routeStops.length} />
+          )}
           <button
             type="button"
             className="btn btn--primary btn--block"
-            disabled={!p.ready || p.busy !== null}
+            disabled={
+              !p.ready || p.busy !== null || routeBlocked(p.routeCheck, altM, p.ceilingM) || p.routeBattery?.ok === false
+            }
             onClick={() => p.onStartRoute(altM)}
           >
             {p.airborne ? 'Fly there' : p.busy === 'takeoff' ? 'Taking off…' : 'Take off'}
@@ -220,6 +289,9 @@ function RoutePlanner(p: Props['px4'] & { ready: boolean; search: ReactNode; air
 /** Manual flight (free fly, or after taking over from the autopilot): stop/return/land and keyboard. */
 function FlightControls(p: Props['px4']) {
   const busy = p.busy !== null
+  const [confirmLand, setConfirmLand] = useState(false)
+  const below = confirmLand ? p.overBuilding : null
+  const land = () => (p.overBuilding ? setConfirmLand(true) : p.onCommand('land'))
   return (
     <>
       <div className="drone-panel__buttons">
@@ -229,10 +301,33 @@ function FlightControls(p: Props['px4']) {
         <button type="button" className="btn" disabled={busy || !p.canFly} onClick={() => p.onCommand('rtl')}>
           Return
         </button>
-        <button type="button" className="btn" disabled={busy || !p.canFly} onClick={() => p.onCommand('land')}>
+        <button type="button" className="btn" disabled={busy || !p.canFly} onClick={land}>
           Land
         </button>
       </div>
+
+      <BatteryWarning battery={p.battery} config={p.simConfig} />
+      <ReturnWarning plan={p.returnPlan} />
+
+      {below && (
+        <div className="drone-panel__check is-bad" role="alert">
+          <span>
+            Over <strong>{below.name ?? 'a building'}</strong> ({below.heightM} m tall). PX4 lands straight down and
+            doesn't know the building is there, so the drone would crash onto the roof.
+          </span>
+          <div className="drone-panel__buttons">
+            <button type="button" className="btn" onClick={() => (setConfirmLand(false), p.onCommand('rtl'))}>
+              Return home
+            </button>
+            <button type="button" className="btn" onClick={() => (setConfirmLand(false), p.onCommand('land'))}>
+              Land anyway
+            </button>
+            <button type="button" className="btn" onClick={() => setConfirmLand(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {(p.busy === 'takeoff' || !p.canFly) && (
         <div className="drone-panel__hint">Taking off… the controls unlock once airborne.</div>
@@ -274,19 +369,30 @@ function FlightControls(p: Props['px4']) {
 
 /** Planned route in flight: the autopilot flies; the only option is to take over. */
 function Autopilot(p: Props['px4']) {
-  const dest = p.routeDest?.label ?? 'the destination'
-  const status = p.routeClimbing ? (
+  const r = p.routeProgress
+  const stop = r ? (
     <>
-      Climbing, then flying to <strong>{dest}</strong>…
-    </>
-  ) : p.target ? (
-    <>
-      Flying to <strong>{dest}</strong>…
+      {r.stopCount > 1 && `stop ${r.stopIndex + 1} of ${r.stopCount}, `}
+      <strong>{r.stopLabel}</strong>
     </>
   ) : (
-    <>
-      Arrived at <strong>{dest}</strong>
-    </>
+    <strong>the destination</strong>
+  )
+  const h = r ? `${Math.round(r.heightM)} m` : 'height'
+  const status = !r ? (
+    <>Flying…</>
+  ) : r.phase === 'climbing' ? (
+    <>Climbing to {h}, then flying to {stop}…</>
+  ) : r.phase === 'flying' ? (
+    <>Flying to {stop}…</>
+  ) : r.phase === 'descending' ? (
+    r.finalDescent ? (
+      <>Descending to {h} over {stop}…</>
+    ) : (
+      <>Descending to {h}, then flying to {stop}…</>
+    )
+  ) : (
+    <>Arrived at {stop}</>
   )
   return (
     <>
@@ -294,10 +400,175 @@ function Autopilot(p: Props['px4']) {
       <div className="drone-panel__flying">
         <span>{status}</span>
       </div>
+      {r?.remaining && (
+        <div className="drone-panel__hint">
+          {formatDistance(r.remaining.distanceM)} to go · about {formatDuration(r.remaining.timeS)}
+        </div>
+      )}
+      <BatteryWarning battery={p.battery} config={p.simConfig} />
+      <ReturnWarning plan={p.returnPlan} />
       <button type="button" className="btn btn--primary btn--block" onClick={p.onTakeOver} disabled={p.busy === 'hold'}>
         Take over controls
       </button>
       <div className="drone-panel__hint">Stops the autopilot (the drone holds where it is) and gives you the controls.</div>
+    </>
+  )
+}
+
+/** Low battery: what PX4 will do (or is doing) about it, and how long until it does. */
+function BatteryWarning({ battery: b, config: c }: { battery: BatteryInfo | null; config: SimConfig }) {
+  if (!b || b.level === 'ok') return null
+  // What PX4 does at the critical level (Settings → Simulation).
+  const act = { return: 'flies home', land: 'lands where it is', warn: "only warns (it won't act)" }[c.lowBatteryAction]
+  const acting = { return: 'PX4 is flying home.', land: 'PX4 is landing where it is.', warn: 'Land now: PX4 is set to only warn.' }[
+    c.lowBatteryAction
+  ]
+  if (b.level === 'emergency')
+    return (
+      <div className="drone-panel__check is-bad" role="alert">
+        <strong>Battery empty:</strong>{' '}
+        {c.lowBatteryAction === 'warn' ? 'land now, PX4 is set to only warn.' : 'PX4 is landing where it is.'}
+      </div>
+    )
+  if (b.level === 'critical')
+    return (
+      <div className="drone-panel__check is-bad" role="alert">
+        <strong>Battery critical:</strong> {acting}{' '}
+        {c.lowBatteryAction === 'return' && b.minToLand !== null && (
+          <>
+            At {c.batteryEmergencyPct}% ({formatMinutes(b.minToLand)}) it lands wherever it is.
+          </>
+        )}
+      </div>
+    )
+  return (
+    <div className="drone-panel__check is-warn" role="alert">
+      <strong>Battery low:</strong> head home soon. At {c.batteryCriticalPct}%
+      {b.minToReturn !== null && <> ({formatMinutes(b.minToReturn)})</>} PX4 {act}.
+    </div>
+  )
+}
+
+/** Shown in flight when Return home can't clear the buildings between the drone and home. */
+function ReturnWarning({ plan }: { plan: ReturnPlan | null }) {
+  if (!plan || plan.safe || !plan.highest) return null
+  return (
+    <div className="drone-panel__check is-bad" role="alert">
+      No safe return from here: <strong>{plan.highest.name ?? 'a building'}</strong> ({plan.highest.heightM} m) is in the way
+      home, too tall to clear under {plan.maxM} m. Move away from it before Return (or a geofence return).
+    </div>
+  )
+}
+
+/** The route can't be flown at any height under the ceiling (no point estimating it). */
+function tooHigh(c: RouteCheckInfo | null, ceilingM: number): boolean {
+  return c?.status === 'done' && c.minSafeRelAltM > ceilingM
+}
+
+/** Whether the route's height is unsafe (or still being checked). */
+function routeBlocked(c: RouteCheckInfo | null, altM: number, ceilingM: number): boolean {
+  if (c?.status === 'checking') return true
+  return c?.status === 'done' && routeProblem(c, altM, ceilingM) !== null
+}
+
+/** The buildings along the route vs the chosen height. */
+function RouteCheck({
+  check: c,
+  altM,
+  currentAltM,
+  onUse,
+  stops,
+  ceilingM,
+}: {
+  check: RouteCheckInfo | null
+  altM: number
+  currentAltM: number | null
+  onUse: (m: number) => void
+  /** Number of stops (the text differs for a multi-stop route). */
+  stops: number
+  ceilingM: number
+}) {
+  if (!c) return null
+  if (c.status === 'checking') return <div className="drone-panel__hint">Checking the buildings along the route…</div>
+  if (c.status === 'error')
+    return <div className="drone-panel__check is-warn">Couldn't check the buildings on the route. Fly high to be safe.</div>
+  if (!c.highest) return <div className="drone-panel__check is-ok">No buildings on the way.</div>
+  const name = (b: { name: string | null; heightM: number }) => (
+    <>
+      <strong>{b.name ?? 'a building'}</strong>, {b.heightM} m tall
+    </>
+  )
+  const what = name(c.highest)
+  const problem = routeProblem(c, altM, ceilingM)
+  if (problem?.kind === 'ceiling')
+    return (
+      <div className="drone-panel__check is-bad">
+        The route passes {what}: too tall to clear under the {ceilingM} m ceiling. Choose another destination.
+      </div>
+    )
+  if (problem)
+    return (
+      <div className="drone-panel__check is-bad">
+        <span>
+          Too low for the destination: {name(c.destHighest!)} is there. End at {problem.needM} m or higher.
+        </span>
+        <button type="button" className="btn btn--small" onClick={() => onUse(problem.needM)}>
+          Use {problem.needM} m
+        </button>
+      </div>
+    )
+  const cross = Math.round(crossingAltM(altM, currentAltM, c.minSafeRelAltM))
+  if (cross > altM + 2)
+    return (
+      <div className="drone-panel__check is-ok">
+        {stops > 1 ? (
+          <>
+            Flies as high as {cross} m to clear {what}, and ends at {altM} m over the last stop.
+          </>
+        ) : (
+          <>
+            Crosses at {cross} m to clear {what}, then descends to {altM} m over the destination.
+          </>
+        )}
+      </div>
+    )
+  return (
+    <div className="drone-panel__check is-ok">
+      Clears the tallest building on the way: {what} (needs {c.minSafeRelAltM} m).
+    </div>
+  )
+}
+
+/**
+ * The planned route's length, flight time and battery: what's left at the last stop and
+ * back home after it (PX4's Return). Take off is refused when home would be under the
+ * reserve (the critical level, where PX4 acts on its own).
+ */
+function RouteSummary({ estimate: e, battery: b, stops }: { estimate: RouteEstimate | null; battery: RouteBattery | null; stops: number }) {
+  if (!e) return null
+  const pct = (x: number) => `${Math.max(0, Math.round(x * 100))}%`
+  return (
+    <>
+      <div className="drone-panel__summary" aria-label="Route estimate">
+        <span>
+          <strong>{formatDistance(e.distanceM)}</strong> {stops > 1 ? `· ${stops} stops` : ''}
+        </span>
+        <span>
+          about <strong>{formatDuration(e.timeS)}</strong>
+        </span>
+      </div>
+      {b && (
+        <div
+          className={`drone-panel__check ${b.ok ? (b.atHome < b.reserve + 0.1 ? 'is-warn' : 'is-ok') : 'is-bad'}`}
+          aria-label="Battery estimate"
+        >
+          <span>
+            Battery {pct(b.now)} → <strong>{pct(b.atEnd)}</strong> at the {stops > 1 ? 'last stop' : 'destination'},{' '}
+            <strong>{pct(b.atHome)}</strong> back home ({formatDuration(b.home.timeS)} more).
+            {!b.ok && <> Not enough: it must get home with at least {pct(b.reserve)}. Choose fewer or nearer stops.</>}
+          </span>
+        </div>
+      )}
     </>
   )
 }

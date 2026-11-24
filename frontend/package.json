@@ -14,7 +14,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "cesium": "^1.140.0",
+    "cesium": "^1.147.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
@@ -28,8 +28,8 @@
     "tsx": "^4.23.15",
     "typescript": "~7.0.2",
     "vite": "^8.3.6",
-    "vite-plugin-static-copy": "^3.4.0",
-    "vitest": "^5.1.1"
+    "vite-plugin-static-copy": "^4.1.1",
+    "vitest": "^4.1.12"
   },
   "engines": {
     "node": ">=20.19"

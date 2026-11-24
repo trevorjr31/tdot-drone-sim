@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The PX4 build stage is ~6 GB; runners start with ~14 GB free. Remove big preinstalled
       # toolchains we don't use so the build (and its cache export) can't run out of disk.
@@ -32,13 +32,13 @@ jobs:
           docker system prune -af > /dev/null || true
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # First run compiles PX4 (~15-20 min on a GitHub runner); later runs reuse the cache.
       # The image itself is small (~200 MB: just the compiled simulator); the cache holds the
       # build stage too, and a failed cache export must not fail the job.
       - name: Build PX4 image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: sim/px4
           build-args: PX4_VERSION=v1.16.2
@@ -48,7 +48,7 @@ jobs:
           cache-to: type=gha,scope=px4-sitl,mode=max,ignore-error=true
 
       - name: Build bridge image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: sim/bridge
           tags: tdot/px4-bridge:dev
@@ -57,7 +57,7 @@ jobs:
           cache-to: type=gha,scope=px4-bridge,mode=max,ignore-error=true
 
       # The bridge uploads the City of Toronto boundary to PX4 as a geofence; generate just that file.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: frontend/.nvmrc
           cache: npm

@@ -834,6 +834,9 @@ body,
 .settings__menu {
   width: 240px;
   max-width: calc(100vw - 24px);
+  /* Below the button (12 px + 38 px + 6 px gap), scrolling inside rather than past the window. */
+  max-height: calc(100vh - 68px);
+  overflow-y: auto;
   padding-top: 4px;
 }
 
@@ -925,6 +928,67 @@ body,
   font-size: 13px;
 }
 
+.drone-panel__dest .btn__ellipsis {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A stop's name, with "Building · 30 m" under it when it's on a building. */
+.drone-panel__stop-name {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.drone-panel__stop-tag {
+  color: var(--panel-muted);
+  font-size: 11px;
+}
+
+/* Route stops: numbered rows, one per stop. */
+.drone-panel__stops {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.drone-panel__stops .drone-panel__dest {
+  gap: 4px;
+  padding: 4px 4px 4px 6px;
+}
+
+/* Narrow ↑ and × buttons, so a stop's name (often coordinates) fits. */
+.drone-panel__stops .btn--small {
+  padding: 4px 7px;
+}
+
+.drone-panel__stop-num {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(76, 201, 240, 0.25);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* Planned route: distance and flight time. */
+.drone-panel__summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--panel-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  font-size: 13px;
+}
+
 .drone-panel__or {
   color: var(--panel-muted);
   font-size: 11px;
@@ -941,4 +1005,136 @@ body,
   width: 100%;
   flex: none;
   padding: 8px;
+}
+
+/* Route safety / landing warnings in the drone card. */
+.drone-panel__check {
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  border: 1px solid transparent;
+}
+.drone-panel__check.is-ok {
+  background: rgba(76, 175, 80, 0.12);
+  border-color: rgba(76, 175, 80, 0.35);
+}
+.drone-panel__check.is-warn {
+  background: rgba(255, 193, 7, 0.12);
+  border-color: rgba(255, 193, 7, 0.4);
+}
+.drone-panel__check.is-bad {
+  background: rgba(244, 67, 54, 0.14);
+  border-color: rgba(244, 67, 54, 0.45);
+}
+.drone-panel__check > span {
+  display: block;
+}
+.drone-panel__check .btn--small,
+.drone-panel__check .drone-panel__buttons {
+  margin-top: 6px;
+}
+
+/* Read-only facts in the settings menu (e.g. the geofence). */
+.settings__facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  margin: 2px 0 4px;
+  padding: 2px 12px;
+  font-size: 12px;
+}
+.settings__facts dt {
+  color: var(--panel-muted);
+}
+.settings__facts dd {
+  margin: 0;
+}
+.settings__fact.is-ok {
+  color: #52c77a;
+}
+.settings__fact.is-bad {
+  color: #e63946;
+}
+
+/* Settings → Simulation: the sim config form. */
+.sim-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 12px 6px;
+  font-size: 12px;
+}
+
+.sim-settings__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.sim-settings__group legend {
+  padding: 4px 0 2px;
+  color: var(--panel-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sim-settings__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.sim-settings__row:has(select) {
+  grid-template-columns: auto 1fr;
+}
+
+.sim-settings__row input,
+.sim-settings__row select {
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--panel-text);
+  font: inherit;
+}
+
+.sim-settings__row input {
+  width: 64px;
+  text-align: right;
+}
+
+.sim-settings__unit {
+  width: 26px;
+  color: var(--panel-muted);
+}
+
+.sim-settings__check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sim-settings__buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.sim-settings__msg {
+  color: var(--panel-muted);
+}
+
+.sim-settings__msg.is-bad {
+  color: #e63946;
+}
+
+.sim-settings__note {
+  margin: 0;
+  color: var(--panel-muted);
+  font-size: 11px;
 }

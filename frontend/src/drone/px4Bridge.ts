@@ -1,4 +1,5 @@
 import type { VelocityCommand } from './keyboardFlight'
+import { parseSimConfig, type SimConfig } from './simConfig'
 import type { DroneSource, DroneState } from './types'
 
 /**
@@ -16,15 +17,17 @@ export type BridgeStatus =
   | 'px4-offline'
   | 'connected'
 
-export type Px4Command = 'takeoff' | 'land' | 'rtl' | 'hold' | 'arm' | 'disarm' | 'goto' | 'crash' | 'reset'
+export type Px4Command = 'takeoff' | 'land' | 'rtl' | 'hold' | 'arm' | 'disarm' | 'goto' | 'crash' | 'reset' | 'returnAlt' | 'config'
 
 export type Px4CommandParams = {
   /** takeoff: height above launch. */
   altitudeM?: number
-  /** goto: destination; height defaults to the current one. */
+  /** goto: destination; height defaults to the current one. returnAlt: Return home's height (relAltM). */
   lat?: number
   lon?: number
   relAltM?: number
+  /** config: the sim settings to change (the bridge saves and applies them). */
+  config?: Partial<SimConfig>
 }
 
 export type GeofenceStatus = {
@@ -36,7 +39,14 @@ export type GeofenceStatus = {
 }
 
 type ServerMessage =
-  | { type: 'status'; px4Connected: boolean; px4Version: string | null; geofence?: GeofenceStatus }
+  | {
+      type: 'status'
+      px4Connected: boolean
+      px4Version: string | null
+      geofence?: GeofenceStatus
+      returnAltM?: number | null
+      config?: unknown
+    }
   | { type: 'state'; state: DroneState }
   | { type: 'ack'; id: string; ok: boolean; error: string | null }
   | { type: 'notice'; level: string; message: string }
@@ -85,6 +95,9 @@ export class Px4BridgeSource implements DroneSource {
   private _status: BridgeStatus = 'idle'
   private _px4Version: string | null = null
   private _geofence: GeofenceStatus | null = null
+  private _returnAltM: number | null = null
+  private _config: SimConfig | null = null
+  private readonly configListeners = new Set<(c: SimConfig | null) => void>()
   private readonly listeners = new Set<(s: DroneState) => void>()
   private readonly statusListeners = new Set<(s: BridgeStatus) => void>()
   private readonly noticeListeners = new Set<(message: string) => void>()
@@ -107,6 +120,21 @@ export class Px4BridgeSource implements DroneSource {
 
   get px4Version() {
     return this._px4Version
+  }
+
+  /** Height PX4's Return mode climbs to, above home, as last set (null until known). */
+  get returnAltM() {
+    return this._returnAltM
+  }
+
+  /** The sim settings the bridge has applied (null until it reports them). */
+  get config() {
+    return this._config
+  }
+
+  onConfig(listener: (c: SimConfig | null) => void) {
+    this.configListeners.add(listener)
+    return () => void this.configListeners.delete(listener)
   }
 
   /** PX4 geofence state reported by the bridge (City boundary + height ceiling). */
@@ -206,6 +234,12 @@ export class Px4BridgeSource implements DroneSource {
     if (msg.type === 'status') {
       this._px4Version = msg.px4Version
       this._geofence = msg.geofence ?? null
+      this._returnAltM = msg.returnAltM ?? null
+      const config = parseSimConfig(msg.config)
+      if (JSON.stringify(config) !== JSON.stringify(this._config)) {
+        this._config = config
+        for (const listener of this.configListeners) listener(config)
+      }
       this.setStatus(msg.px4Connected ? 'connected' : 'px4-offline')
     } else if (msg.type === 'state') {
       this._latest = msg.state

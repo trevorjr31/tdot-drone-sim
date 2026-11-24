@@ -41,10 +41,20 @@ services:
     # City of Toronto boundary for PX4's geofence, from `npm run data` (read-only).
     volumes:
       - ./frontend/public/data/toronto:/data:ro
+      # Sim config set from the app's Settings (speeds, battery, ceiling…), kept over restarts.
+      - bridge-config:/config
     environment:
       MAVLINK_URL: udpin://0.0.0.0:14540
       FENCE_FILE: /data/boundary-fence.geojson
       FENCE_CEILING_M: "120"
+      # Defaults for the sim config until it's changed in the app's Settings (then the saved
+      # value in the bridge-config volume wins): geofence ceiling, and minutes of hovering on
+      # a full battery (more or less with load).
+      BATTERY_FLIGHT_MIN: "${BATTERY_FLIGHT_MIN:-20}"
+      CONFIG_FILE: /config/sim-config.json
       WS_PORT: "8765"
       STATE_RATE_HZ: "20"
     restart: unless-stopped
+
+volumes:
+  bridge-config:
