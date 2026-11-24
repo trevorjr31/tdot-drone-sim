@@ -2,9 +2,9 @@
 
 A drone simulator set in a 3D City of Toronto.
 
-![The drone at home in Nathan Phillips Square, with the drone panel and Settings open](docs/screenshots/city-hall-settings.webp)
+![Plan a route over downtown Toronto: recent places in the search, the drone taking off](docs/screenshots/plan-a-route.png)
 
-![Plan a route: searching for a destination, with the drone on the ground](docs/screenshots/plan-a-route.webp)
+![The drone flying home (Return) over Nathan Phillips Square, propellers spinning, its yellow trail behind](docs/screenshots/drone-return.png)
 
 | Part | What it is | Where |
 |---|---|---|
