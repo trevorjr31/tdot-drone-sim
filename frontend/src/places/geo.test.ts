@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Position } from '../data/torontoData'
-import { bboxOf, defaultRange, distanceM, pointInRing } from './geo'
+import { bboxOf, distanceM, pointInRing } from './geo'
 
 describe('distanceM', () => {
   it('measures north-south distance (0.01° latitude ≈ 1.1 km)', () => {
@@ -74,25 +74,5 @@ describe('bboxOf', () => {
       ],
     ]
     expect(bboxOf(polygons)).toEqual({ west: -79.5, south: 43.6, east: -79.3, north: 43.8 })
-  })
-})
-
-describe('defaultRange', () => {
-  it('uses a fixed distance for points', () => {
-    expect(defaultRange({ type: 'point', lon: -79.38, lat: 43.65 })).toBe(600)
-  })
-
-  it('never goes closer than 450 m or further than 8 km', () => {
-    const tiny = { type: 'area' as const, west: -79.3801, south: 43.6501, east: -79.38, north: 43.6502 }
-    const huge = { type: 'area' as const, west: -79.64, south: 43.58, east: -79.11, north: 43.86 }
-    expect(defaultRange(tiny)).toBe(450)
-    expect(defaultRange(huge)).toBe(8000)
-  })
-
-  it('scales with the size of the area in between', () => {
-    const block = { type: 'area' as const, west: -79.39, south: 43.65, east: -79.38, north: 43.655 }
-    const range = defaultRange(block)
-    expect(range).toBeGreaterThan(450)
-    expect(range).toBeLessThan(8000)
   })
 })

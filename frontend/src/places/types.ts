@@ -24,8 +24,11 @@ export type Place = {
 
 /** What the map exposes to the search UI. */
 export type MapApi = {
-  flyToPlace: (place: Place) => void
-  flyHome: () => void
+  /**
+   * Marks a place on the map: a pin, or the neighbourhood selected. The camera stays
+   * on the drone (it's always in chase); the drone can be sent there with fly-to.
+   */
+  showPlace: (place: Place) => void
   /** Removes the search-result pin. */
   clearPin: () => void
   /** Waits for a click on the map and returns that point (null if cancelled with Esc). */

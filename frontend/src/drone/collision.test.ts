@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FeatureCollection, MassingProps, Position } from '../data/torontoData'
-import { buildingsFromTile, checkBuildings, distanceToRingM, findImpact } from './collision'
+import { buildingsFromTile, checkBuildings, distanceToRingM, findImpact, footprintContains } from './collision'
 
 // A 40 m × 40 m building near City Hall: ground 90 m ASL, 30 m tall (roof 120 m ASL),
 // with a 10 m × 10 m courtyard in the middle.
@@ -28,6 +28,14 @@ describe('buildingsFromTile', () => {
     expect(buildings[0].groundM).toBe(90)
     expect(buildings[0].roofM).toBe(120)
     expect(buildings[0].holes).toHaveLength(1)
+  })
+})
+
+describe('footprintContains', () => {
+  it('is true inside the footprint and false in the courtyard or outside, regardless of height', () => {
+    expect(footprintContains(buildings[0], ...at(12, 0))).toBe(true)
+    expect(footprintContains(buildings[0], ...at(0, 0))).toBe(false) // courtyard
+    expect(footprintContains(buildings[0], ...at(25, 0))).toBe(false)
   })
 })
 

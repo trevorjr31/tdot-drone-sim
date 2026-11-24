@@ -1,2 +1,2 @@
-mavsdk-grpc>=4,<5
-websockets>=14,<16
+mavsdk-grpc>=4.0.5,<5
+websockets>=17.4,<18

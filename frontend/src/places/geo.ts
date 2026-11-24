@@ -1,5 +1,4 @@
 import type { Position } from '../data/torontoData'
-import type { PlaceTarget } from './types'
 
 /**
  * Small geometry helpers for places. Plain maths (no Cesium), so they're easy
@@ -14,14 +13,6 @@ export function distanceM(lon1: number, lat1: number, lon2: number, lat2: number
   const x = (lon2 - lon1) * M_PER_DEG_LON_AT_EQUATOR * Math.cos((((lat1 + lat2) / 2) * Math.PI) / 180)
   const y = (lat2 - lat1) * M_PER_DEG_LAT
   return Math.hypot(x, y)
-}
-
-/** Camera distance that fits the place: close for a building, further for a neighbourhood. */
-export function defaultRange(target: PlaceTarget): number {
-  if (target.type === 'point') return 600
-  const width = distanceM(target.west, target.south, target.east, target.south)
-  const height = distanceM(target.west, target.south, target.west, target.north)
-  return Math.min(Math.max(Math.hypot(width, height) * 1.4, 450), 8000)
 }
 
 /** Bounding box of the outer rings of one or more polygons. */

@@ -1,5 +1,5 @@
 # PX4 ⇄ browser bridge: MAVSDK (MAVLink/UDP) in, WebSocket out.
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 WORKDIR /app
 COPY requirements.txt .

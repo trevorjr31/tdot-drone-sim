@@ -21,6 +21,15 @@ export type Building = {
   /** Ground and roof (highest point) heights, metres above sea level. */
   groundM: number
   roofM: number
+  /** From the City's Address Points (joined by the data script); absent when none matched. */
+  address?: {
+    /** Up to 5, best first. */
+    addresses: string[]
+    /** Total number of addresses. */
+    count: number
+    place: string | null
+    ward: string | null
+  }
 }
 
 export type CollisionCheck = {
@@ -40,10 +49,14 @@ export type CheckOptions = {
 const M_PER_DEG_LAT = 110_574
 const mPerDegLon = (lat: number) => 111_320 * Math.cos((lat * Math.PI) / 180)
 
-/** Builds the per-building records from a massing tile. */
-export function buildingsFromTile(fc: FeatureCollection<MassingProps>): Building[] {
+/** Builds the per-building records from a massing tile (`wards` from the massing index). */
+export function buildingsFromTile(fc: FeatureCollection<MassingProps>, wards: string[] = []): Building[] {
   const out: Building[] = []
   for (const f of fc.features) {
+    const { a, an, p, w } = f.properties
+    const address = a?.length
+      ? { addresses: a, count: an ?? a.length, place: p ?? null, ward: w != null ? (wards[w] ?? null) : null }
+      : undefined
     const polygons = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
     for (const [outer, ...holes] of polygons) {
       let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity
@@ -53,10 +66,22 @@ export function buildingsFromTile(fc: FeatureCollection<MassingProps>): Building
         e = Math.max(e, lon)
         n = Math.max(n, lat)
       }
-      out.push({ outer, holes, bbox: [w, s, e, n], groundM: f.properties.g, roofM: f.properties.g + f.properties.top })
+      out.push({ outer, holes, bbox: [w, s, e, n], groundM: f.properties.g, roofM: f.properties.g + f.properties.top, address })
     }
   }
   return out
+}
+
+/** A building's place name or first address, if the City data has one. */
+export function buildingName(b: Building): string | null {
+  return b.address?.place ?? b.address?.addresses[0] ?? null
+}
+
+/** Inside the outer ring and not in a courtyard (hole). */
+export function footprintContains(b: Pick<Building, 'bbox' | 'outer' | 'holes'>, lon: number, lat: number): boolean {
+  const [w, s, e, n] = b.bbox
+  if (lon < w || lon > e || lat < s || lat > n) return false
+  return pointInRing(lon, lat, b.outer) && !b.holes.some((h) => pointInRing(lon, lat, h))
 }
 
 /** Shortest distance in metres from a point to a ring's edges (equirectangular, fine at city scale). */
@@ -138,7 +163,7 @@ export class BuildingCollider {
       if (this.tiles.has(key)) continue
       this.tiles.set(key, 'loading')
       this.loadTile(key)
-        .then((fc) => this.tiles.set(key, buildingsFromTile(fc)))
+        .then((fc) => this.tiles.set(key, buildingsFromTile(fc, this.index.wards)))
         .catch(() => this.tiles.delete(key)) // retried on a later move
     }
     for (const key of this.tiles.keys()) {
@@ -149,6 +174,16 @@ export class BuildingCollider {
   /** True once every tile around the last position has loaded. */
   get ready() {
     return [...this.tiles.values()].every((t) => t !== 'loading')
+  }
+
+  /** Buildings whose footprint contains the point, whatever their height (for click info). */
+  footprintsAt(lon: number, lat: number): Building[] {
+    const out: Building[] = []
+    for (const t of this.tiles.values()) {
+      if (t === 'loading') continue
+      for (const b of t) if (footprintContains(b, lon, lat)) out.push(b)
+    }
+    return out
   }
 
   check(lon: number, lat: number, altAmslM: number, options?: CheckOptions): CollisionCheck {

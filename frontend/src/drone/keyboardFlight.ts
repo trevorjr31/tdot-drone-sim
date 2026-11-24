@@ -63,6 +63,7 @@ export class KeyboardFlight {
   private suspended = false
   private timer: number | undefined
   private releaseLeft = 0
+  private speeds: FlightSpeeds = DEFAULT_SPEEDS
 
   constructor(send: (v: VelocityCommand) => void, onActiveChange: (active: boolean) => void = () => {}) {
     this.send = send
@@ -77,6 +78,11 @@ export class KeyboardFlight {
     if (enabled === this.enabled) return
     this.enabled = enabled
     if (!enabled) this.releaseAll()
+  }
+
+  /** Horizontal speed (Settings → Simulation); applies from the next update. */
+  setHorizontalSpeed(ms: number) {
+    this.speeds = { ...this.speeds, horizontalMs: ms }
   }
 
   /** Stop sending now (e.g. after a collision); held keys are ignored until pressed again. */
@@ -136,7 +142,7 @@ export class KeyboardFlight {
 
   private tick() {
     if (this.active) {
-      this.send(velocityFromKeys(this.pressed))
+      this.send(velocityFromKeys(this.pressed, this.speeds))
     } else if (this.releaseLeft > 0) {
       this.releaseLeft--
       this.send(ZERO)

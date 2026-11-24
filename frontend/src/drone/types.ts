@@ -30,7 +30,7 @@ export type DroneState = {
   home: { lat: number; lon: number; altAmslM: number }
 }
 
-/** Anything that produces drone states: the demo flight now, the PX4 bridge later. */
+/** Anything that produces drone states (the PX4 bridge; also handy for tests). */
 export interface DroneSource {
   /** Human-readable name shown in the UI. */
   readonly name: string
@@ -39,11 +39,3 @@ export interface DroneSource {
   /** Called with every new state. Returns an unsubscribe function. */
   subscribe(listener: (state: DroneState) => void): () => void
 }
-
-export type CameraMode = 'free' | 'chase' | 'fpv'
-
-export const CAMERA_MODES: { id: CameraMode; label: string; hint: string }[] = [
-  { id: 'chase', label: 'Chase', hint: 'Follow behind the drone' },
-  { id: 'fpv', label: 'FPV', hint: 'First-person view from the drone' },
-  { id: 'free', label: 'Free', hint: 'Move the map camera yourself' },
-]
