@@ -384,7 +384,10 @@ function Autopilot(p: Props['px4']) {
   ) : r.phase === 'climbing' ? (
     <>Climbing to {h}, then flying to {stop}…</>
   ) : r.phase === 'flying' ? (
-    <>Flying to {stop}…</>
+    <>
+      Flying to {stop}
+      {r.detour && ', round tall buildings'}…
+    </>
   ) : r.phase === 'descending' ? (
     r.finalDescent ? (
       <>Descending to {h} over {stop}…</>
@@ -492,13 +495,13 @@ function RouteCheck({
   if (c.status === 'checking') return <div className="drone-panel__hint">Checking the buildings along the route…</div>
   if (c.status === 'error')
     return <div className="drone-panel__check is-warn">Couldn't check the buildings on the route. Fly high to be safe.</div>
-  if (!c.highest) return <div className="drone-panel__check is-ok">No buildings on the way.</div>
+  if (!c.highest && !c.detours.length) return <div className="drone-panel__check is-ok">No buildings on the way.</div>
   const name = (b: { name: string | null; heightM: number }) => (
     <>
       <strong>{b.name ?? 'a building'}</strong>, {b.heightM} m tall
     </>
   )
-  const what = name(c.highest)
+  const what = c.highest ? name(c.highest) : null
   const problem = routeProblem(c, altM, ceilingM)
   if (problem?.kind === 'ceiling')
     return (
@@ -518,6 +521,32 @@ function RouteCheck({
       </div>
     )
   const cross = Math.round(crossingAltM(altM, currentAltM, c.minSafeRelAltM))
+  const detour = c.detours.length > 0 && (
+    <div className="drone-panel__check is-ok">
+      {c.detours.length === 1 ? (
+        <>
+          Goes round <strong>{c.detours[0].around?.name ?? 'a building'}</strong>
+          {c.detours[0].around && <>, {c.detours[0].around.heightM} m tall</>}: too tall to fly over under the {ceilingM} m
+          ceiling. The way round adds {formatDistance(c.detours[0].extraM)}.
+        </>
+      ) : (
+        <>
+          Goes round {c.detours.length} buildings too tall to fly over under the {ceilingM} m ceiling, adding{' '}
+          {formatDistance(c.detours.reduce((t, d) => t + d.extraM, 0))}.
+        </>
+      )}
+    </div>
+  )
+  if (detour)
+    return (
+      <>
+        {detour}
+        <div className="drone-panel__check is-ok">
+          Flies as high as {cross} m{c.highest && <> to clear {what}</>}, and ends at {altM} m over the{' '}
+          {stops > 1 ? 'last stop' : 'destination'}.
+        </div>
+      </>
+    )
   if (cross > altM + 2)
     return (
       <div className="drone-panel__check is-ok">

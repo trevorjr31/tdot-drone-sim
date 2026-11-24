@@ -204,16 +204,25 @@ function stepPoint(step: RouteStep): PreviewPoint {
   return { lat: step.lat, lon: step.lon, relAltM: step.altM }
 }
 
+/** The stops the user chose, leaving out detour turning points: [path index, stop number (0-based)]. */
+export function realStops(stops: FlyToTarget[]): [number, number][] {
+  const out: [number, number][] = []
+  stops.forEach((s, i) => !s.via && out.push([i, out.length]))
+  return out
+}
+
 function stopLabel(stops: FlyToTarget[], i: number): string {
   const s = stops[i]
+  const real = realStops(stops)
+  const n = real.findIndex(([k]) => k === i)
   const name = s.building ? `${s.label} (building, ${s.building.heightM} m)` : s.label
-  return stops.length > 1 ? `${i + 1}. ${name}` : `Destination: ${name}`
+  return real.length > 1 ? `${n + 1}. ${name}` : `Destination: ${name}`
 }
 
 /** The whole route, from the drone, while it's being planned. */
 export function planPreview(stops: FlyToTarget[], steps: RouteStep[]): RoutePreview {
   return {
-    markers: stops.map((s, i) => ({ lat: s.lat, lon: s.lon, label: stopLabel(stops, i) })),
+    markers: stops.flatMap((s, i) => (s.via ? [] : [{ lat: s.lat, lon: s.lon, label: stopLabel(stops, i) }])),
     path: steps.map(stepPoint),
     fromDrone: true,
   }
@@ -228,7 +237,7 @@ export function remainingPreview(stops: FlyToTarget[], steps: RouteStep[], curre
   if (j < 0) return null
   const heading = (steps[j] as Extract<RouteStep, { kind: 'fly' }>).stop
   const path = steps.slice(j).map(stepPoint)
-  const markers = stops.flatMap((s, i) => (i > heading ? [{ lat: s.lat, lon: s.lon, label: stopLabel(stops, i) }] : []))
+  const markers = stops.flatMap((s, i) => (i > heading && !s.via ? [{ lat: s.lat, lon: s.lon, label: stopLabel(stops, i) }] : []))
   return markers.length || path.length > 1 ? { markers, path, fromDrone: false } : null
 }
 

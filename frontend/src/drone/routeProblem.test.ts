@@ -10,6 +10,8 @@ const check: Extract<RouteCheckInfo, { status: 'done' }> = {
   destHighest: { name: 'Podium', heightM: 8 },
   legMinSafeM: [99],
   returnMinSafeM: 99,
+  path: [{ lat: 43.65, lon: -79.38, label: 'Destination' }],
+  detours: [],
 }
 
 describe('routeProblem', () => {

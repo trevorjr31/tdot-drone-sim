@@ -55,6 +55,8 @@ export type FlyToTarget = {
   label: string
   /** The place is on a building (picked on the map): its height, metres. */
   building?: { heightM: number }
+  /** A turning point on a detour round tall buildings, not a stop the user chose. */
+  via?: boolean
 }
 
 /** A point on a planned route's path, metres above home; `atDrone` points sit over the drone. */

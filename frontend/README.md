@@ -93,8 +93,13 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
     tallest building on the way. Each leg is flown at a crossing height 10 m above its
     tallest building (or your height, if higher): the drone changes height straight up or
     down, at the start or over a stop, never on the way, and descends to your height over
-    the last stop. Take off is refused if the route needs more than the 120 m ceiling, or if
-    your height is too low for the last stop itself.
+    the last stop. A leg that can't be flown straight because a building is too tall to
+    clear under the ceiling goes **round** it instead, by the shortest path: the planner
+    searches the area for a way that stays 15 m from every building too tall to cross 5 m
+    under the ceiling, straightens it into a few turning points, and flies those as hidden
+    waypoints (the panel names the building and how much longer the way round is). Take off
+    is refused only if there's no way round within 2.5 km, or if your height is too low for
+    the last stop itself.
 
   After landing (or Reset after a crash) the panel returns to this choice. Refusals
   (e.g. pre-arm checks failing) show in the panel.

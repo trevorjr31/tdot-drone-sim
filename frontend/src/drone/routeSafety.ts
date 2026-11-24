@@ -7,6 +7,7 @@
  */
 import type { FeatureCollection, MassingIndex, MassingProps } from '../data/torontoData'
 import { buildingName, buildingsFromTile, footprintContains, type Building } from './collision'
+import { findDetour } from './detour'
 
 /** Half-width of the strip checked either side of the straight line, metres. */
 export const ROUTE_CORRIDOR_M = 15
@@ -126,6 +127,16 @@ function clipsRect(a: LatLon, b: LatLon, w: number, s: number, e: number, n: num
   return true
 }
 
+/** Areas searched for a way round, in turn: metres either side of the straight line. */
+const DETOUR_MARGINS_M = [300, 1000, 2500]
+
+/** Massing tiles overlapping a rectangle [west, south, east, north]. */
+function tilesInBox(index: MassingIndex, [w, s, e, n]: [number, number, number, number]): string[] {
+  return Object.entries(index.tiles)
+    .filter(([, t]) => !(t.bbox[2] < w || t.bbox[0] > e || t.bbox[3] < s || t.bbox[1] > n))
+    .map(([key]) => key)
+}
+
 /** Loads the tiles a route crosses and finds the lowest safe height for it. */
 export class RouteSafety {
   private readonly tiles = new Map<string, Promise<Building[]>>()
@@ -153,6 +164,31 @@ export class RouteSafety {
     const here = sets.flat().filter((b) => footprintContains(b, at.lon, at.lat))
     const tallest = here.reduce<Building | null>((t, b) => (!t || b.roofM > t.roofM ? b : t), null)
     return tallest ? { name: buildingName(tallest), heightM: Math.round(tallest.roofM - tallest.groundM) } : null
+  }
+
+  /**
+   * The shortest way round the buildings that are too tall to cross at `maxCrossM` above
+   * home (their roof plus the clearance is higher), keeping the route corridor from them:
+   * turning points between `from` and `to`, [] if the straight line is fine, or null if
+   * there's no way round nearby.
+   */
+  async detour(from: LatLon, to: LatLon, homeAmslM: number, maxCrossM: number): Promise<LatLon[] | null> {
+    const tooTall = (b: Building) => b.roofM - homeAmslM + ROUTE_CLEARANCE_M > maxCrossM
+    for (const marginM of DETOUR_MARGINS_M) {
+      const padLon = marginM / mPerDegLon(from.lat)
+      const padLat = marginM / M_PER_DEG_LAT
+      const box: [number, number, number, number] = [
+        Math.min(from.lon, to.lon) - padLon,
+        Math.min(from.lat, to.lat) - padLat,
+        Math.max(from.lon, to.lon) + padLon,
+        Math.max(from.lat, to.lat) + padLat,
+      ]
+      const sets = await Promise.all(tilesInBox(this.index, box).map((k) => this.tile(k)))
+      const obstacles = sets.flat().filter(tooTall)
+      const via = findDetour(obstacles, from, to, { corridorM: ROUTE_CORRIDOR_M, marginM })
+      if (via) return via
+    }
+    return null
   }
 
   private tile(key: string): Promise<Building[]> {
