@@ -2,6 +2,10 @@
 
 A drone simulator set in a 3D City of Toronto.
 
+![The drone at home in Nathan Phillips Square, with the drone panel and Settings open](docs/screenshots/city-hall-settings.webp)
+
+![Plan a route: searching for a destination, with the drone on the ground](docs/screenshots/plan-a-route.webp)
+
 | Part | What it is | Where |
 |---|---|---|
 | Frontend | React + TypeScript + CesiumJS: photorealistic 3D Toronto, City of Toronto data layers, place search | [frontend/](frontend/) |
