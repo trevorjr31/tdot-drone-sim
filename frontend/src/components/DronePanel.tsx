@@ -67,6 +67,8 @@ type Props = {
     /** The autopilot is flying a planned route. */
     autopilot: boolean
     onTakeOver: () => void
+    /** Fly home on autopilot, round tall buildings, then land (the Return button). */
+    onReturnHome: () => void
 
     // In flight
     /** Connected and airborne: keyboard flying and fly-to are available. */
@@ -298,8 +300,14 @@ function FlightControls(p: Props['px4']) {
         <button type="button" className="btn" disabled={busy || !p.canFly} onClick={() => p.onCommand('hold')}>
           Hold
         </button>
-        <button type="button" className="btn" disabled={busy || !p.canFly} onClick={() => p.onCommand('rtl')}>
-          Return
+        <button
+          type="button"
+          className="btn"
+          disabled={busy || !p.canFly}
+          onClick={p.onReturnHome}
+          title="Fly home round any buildings too tall to cross, then land"
+        >
+          {p.busy === 'rtl' ? 'Planning…' : 'Return'}
         </button>
         <button type="button" className="btn" disabled={busy || !p.canFly} onClick={land}>
           Land
@@ -316,7 +324,7 @@ function FlightControls(p: Props['px4']) {
             doesn't know the building is there, so the drone would crash onto the roof.
           </span>
           <div className="drone-panel__buttons">
-            <button type="button" className="btn" onClick={() => (setConfirmLand(false), p.onCommand('rtl'))}>
+            <button type="button" className="btn" onClick={() => (setConfirmLand(false), p.onReturnHome())}>
               Return home
             </button>
             <button type="button" className="btn" onClick={() => (setConfirmLand(false), p.onCommand('land'))}>
@@ -379,14 +387,27 @@ function Autopilot(p: Props['px4']) {
     <strong>the destination</strong>
   )
   const h = r ? `${Math.round(r.heightM)} m` : 'height'
+  const round = r?.detour && ', round tall buildings'
   const status = !r ? (
     <>Flying…</>
+  ) : r.returning ? (
+    r.phase === 'climbing' ? (
+      <>Climbing to {h}, then flying home…</>
+    ) : r.phase === 'flying' ? (
+      <>Flying home{round}…</>
+    ) : r.phase === 'descending' ? (
+      <>Descending to {h}, then flying home…</>
+    ) : r.phase === 'landing' ? (
+      <>Landing at home…</>
+    ) : (
+      <>Home: hovering here (Settings → Simulation: after return)</>
+    )
   ) : r.phase === 'climbing' ? (
     <>Climbing to {h}, then flying to {stop}…</>
   ) : r.phase === 'flying' ? (
     <>
       Flying to {stop}
-      {r.detour && ', round tall buildings'}…
+      {round}…
     </>
   ) : r.phase === 'descending' ? (
     r.finalDescent ? (
@@ -399,7 +420,7 @@ function Autopilot(p: Props['px4']) {
   )
   return (
     <>
-      <div className="drone-panel__label">Autopilot</div>
+      <div className="drone-panel__label">{r?.returning ? 'Returning home' : 'Autopilot'}</div>
       <div className="drone-panel__flying">
         <span>{status}</span>
       </div>
@@ -409,7 +430,7 @@ function Autopilot(p: Props['px4']) {
         </div>
       )}
       <BatteryWarning battery={p.battery} config={p.simConfig} />
-      <ReturnWarning plan={p.returnPlan} />
+      {!r?.returning && <ReturnWarning plan={p.returnPlan} />}
       <button type="button" className="btn btn--primary btn--block" onClick={p.onTakeOver} disabled={p.busy === 'hold'}>
         Take over controls
       </button>
@@ -452,13 +473,13 @@ function BatteryWarning({ battery: b, config: c }: { battery: BatteryInfo | null
   )
 }
 
-/** Shown in flight when Return home can't clear the buildings between the drone and home. */
+/** Shown in flight when there's no way home round the buildings under the ceiling. */
 function ReturnWarning({ plan }: { plan: ReturnPlan | null }) {
-  if (!plan || plan.safe || !plan.highest) return null
+  if (!plan || plan.safe || plan.pathHome !== false || !plan.highest) return null
   return (
     <div className="drone-panel__check is-bad" role="alert">
-      No safe return from here: <strong>{plan.highest.name ?? 'a building'}</strong> ({plan.highest.heightM} m) is in the way
-      home, too tall to clear under {plan.maxM} m. Move away from it before Return (or a geofence return).
+      No way home round <strong>{plan.highest.name ?? 'a building'}</strong> ({plan.highest.heightM} m) found under the
+      ceiling: a return would fly straight at {plan.maxM} m, into it. Move away from it first.
     </div>
   )
 }
@@ -527,7 +548,8 @@ function RouteCheck({
         <>
           Goes round <strong>{c.detours[0].around?.name ?? 'a building'}</strong>
           {c.detours[0].around && <>, {c.detours[0].around.heightM} m tall</>}: too tall to fly over under the {ceilingM} m
-          ceiling. The way round adds {formatDistance(c.detours[0].extraM)}.
+          ceiling.{' '}
+          {c.detours[0].extraM < 10 ? 'The way round is hardly any longer.' : <>The way round adds {formatDistance(c.detours[0].extraM)}.</>}
         </>
       ) : (
         <>

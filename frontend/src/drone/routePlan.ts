@@ -38,6 +38,8 @@ export type RouteStep =
   | { kind: 'vertical'; altM: number; lat: number; lon: number; atStart: boolean }
   /** Fly to stop `stop`, at the current height. */
   | { kind: 'fly'; stop: number; dest: FlyToTarget; altM: number }
+  /** Land where it is (the end of a return home). */
+  | { kind: 'land'; lat: number; lon: number }
 
 /**
  * Crossing height for each leg. The first leg never descends from the current height
@@ -66,6 +68,38 @@ export function routeSteps(start: RouteStart, stops: FlyToTarget[], legMinSafeM:
     steps.push({ kind: 'vertical', altM, lat: at.lat, lon: at.lon, atStart: false })
   return steps
 }
+
+/**
+ * The steps for flying home along `path` (ending at home): each leg at the height that
+ * clears its buildings (at least `minAltM`, never descending before the first leg), then
+ * land, or stay hovering over home.
+ */
+export function returnSteps(start: RouteStart, path: FlyToTarget[], legMinSafeM: number[], minAltM: number, land: boolean): RouteStep[] {
+  const steps = routeSteps(start, path, legMinSafeM, minAltM)
+  if (steps[steps.length - 1]?.kind === 'vertical') steps.pop() // no descent to minAltM: it lands from there
+  const home = path[path.length - 1]
+  if (land && home) steps.push({ kind: 'land', lat: home.lat, lon: home.lon })
+  return steps
+}
+
+/**
+ * The return path as points for PX4's mission-based Return (drone → home): the drone's
+ * spot at the first leg's height, then each stop and height change. A height change gets
+ * a second point at the same spot, so PX4 climbs or descends there rather than along the
+ * next leg (where the building check doesn't cover it).
+ */
+export function missionPoints(start: LatLon, steps: RouteStep[]): { lat: number; lon: number; relAltM: number }[] {
+  const first = steps.find((s) => s.kind === 'fly')
+  if (!first || first.kind !== 'fly') return []
+  const pts = [{ lat: start.lat, lon: start.lon, relAltM: first.altM }]
+  for (const step of steps) {
+    if (step.kind === 'fly') pts.push({ lat: step.dest.lat, lon: step.dest.lon, relAltM: step.altM })
+    else if (step.kind === 'vertical' && !step.atStart) pts.push({ lat: step.lat, lon: step.lon, relAltM: step.altM })
+  }
+  return pts
+}
+
+type LatLon = { lat: number; lon: number }
 
 export type RouteEstimate = {
   /** Along the ground, metres. */
@@ -120,6 +154,13 @@ export function estimateRoute(start: RouteStart, steps: RouteStep[], config: Sim
       distance += d
       t.leg(d)
       at = step.dest
+    } else if (step.kind === 'land') {
+      // Descent speed down to 5 m, then the landing speed (as PX4 lands).
+      const slow = Math.min(height, LAND_SLOW_ALT_M)
+      t.add((height - slow) / config.descendMs, true, -config.descendMs, 0)
+      t.add(slow / config.landMs, true, -config.landMs, 0)
+      climb += height
+      height = 0
     } else {
       const dh = step.altM - height
       climb += Math.abs(dh)
@@ -200,6 +241,7 @@ export function formatDuration(s: number): string {
 /** Where a step ends, for drawing the path (take-offs and climbs at the start sit over the drone). */
 function stepPoint(step: RouteStep): PreviewPoint {
   if (step.kind === 'fly') return { lat: step.dest.lat, lon: step.dest.lon, relAltM: step.altM }
+  if (step.kind === 'land') return { lat: step.lat, lon: step.lon, relAltM: 0 }
   if (step.kind === 'takeoff' || step.atStart) return { atDrone: true, relAltM: step.altM }
   return { lat: step.lat, lon: step.lon, relAltM: step.altM }
 }

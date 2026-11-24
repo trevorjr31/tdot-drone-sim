@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_SIM_CONFIG } from './simConfig'
-import { checkBattery, estimateReturn, estimateRoute, formatDistance, formatDuration, formatLatLon, legCrossings, routeSteps, type RouteStart } from './routePlan'
+import { checkBattery, estimateReturn, estimateRoute, formatDistance, missionPoints, returnSteps, formatDuration, formatLatLon, legCrossings, routeSteps, type RouteStart } from './routePlan'
 
 const ground: RouteStart = { lat: 43.65, lon: -79.38, relAltM: 0, inAir: false }
 // About 800 m east, then 800 m north of that.
@@ -110,5 +110,28 @@ describe('battery estimate', () => {
     const home = { distanceM: 0, climbM: 0, timeS: 0, battery: 0.3 }
     expect(checkBattery(1, route, home, config)).toMatchObject({ atEnd: 0.5, ok: true })
     expect(checkBattery(0.9, route, home, config).ok).toBe(false) // 10% home < 15%
+  })
+})
+
+describe('return home', () => {
+  const air = { ...ground, relAltM: 30, inAir: true }
+  const home = { lat: ground.lat, lon: ground.lon, label: 'Home' }
+
+  it('flies each leg at its height, then lands at home (no descent first)', () => {
+    // Out to a detour turning point at 60 m, then home at 90 m.
+    const steps = returnSteps(air, [{ ...a, via: true }, home], [60, 90], 20, true)
+    expect(steps.map((s) => s.kind)).toEqual(['vertical', 'fly', 'vertical', 'fly', 'land'])
+    expect(steps.at(-1)).toEqual({ kind: 'land', lat: home.lat, lon: home.lon })
+    expect(returnSteps(air, [home], [0], 20, false).map((s) => s.kind)).toEqual(['fly'])
+  })
+
+  it("gives PX4 points with height changes at a spot, not along a leg", () => {
+    const steps = returnSteps(air, [{ ...a, via: true }, home], [60, 90], 20, true)
+    expect(missionPoints(air, steps)).toEqual([
+      { lat: air.lat, lon: air.lon, relAltM: 60 }, // the drone's spot, at the first leg's height
+      { lat: a.lat, lon: a.lon, relAltM: 60 },
+      { lat: a.lat, lon: a.lon, relAltM: 90 }, // climb at the turning point
+      { lat: home.lat, lon: home.lon, relAltM: 90 },
+    ])
   })
 })

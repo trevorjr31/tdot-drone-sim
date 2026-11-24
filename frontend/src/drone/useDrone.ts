@@ -11,6 +11,7 @@ import { loadMassingIndex, loadMassingTile } from '../data/torontoData'
 import { buildingName, type Building } from './collision'
 import { RouteSafety, type LatLon, type RouteCheck } from './routeSafety'
 import { pathLengthM } from './detour'
+import { distanceM } from '../places/geo'
 import {
   checkBattery,
   estimateReturn,
@@ -22,6 +23,8 @@ import {
   ROUTE_MAX_STOPS,
   routeSteps,
   realStops,
+  returnSteps,
+  missionPoints,
   stepStop,
   type BatteryCheck,
   type RouteEstimate,
@@ -30,7 +33,7 @@ import {
 } from './routePlan'
 
 /** Where the autopilot is in a planned route. */
-export type RoutePhase = 'climbing' | 'flying' | 'descending' | 'arrived'
+export type RoutePhase = 'climbing' | 'flying' | 'descending' | 'landing' | 'arrived'
 
 /** Buildings along the planned route (see routeSafety.ts). */
 export type RouteCheckInfo =
@@ -97,10 +100,23 @@ export type ReturnPlan = {
   safe: boolean
   /** Highest Return may fly (5 m under the geofence ceiling). */
   maxM: number
+  /**
+   * A path home round the buildings is loaded in PX4, so its own Return follows it (true),
+   * there's no way round (false), or not known yet / not flying (null).
+   */
+  pathHome: boolean | null
 }
 
 /** A planned route being flown: its steps, the one in progress, and the stops. */
-type RouteRun = { steps: RouteStep[]; i: number; stops: FlyToTarget[]; altM: number; phase: RoutePhase }
+type RouteRun = {
+  steps: RouteStep[]
+  i: number
+  stops: FlyToTarget[]
+  altM: number
+  phase: RoutePhase
+  /** A planned route, or flying home (the Return button). */
+  kind: 'route' | 'return'
+}
 
 /** A planned route in flight, as the panel shows it. */
 export type RouteProgress = {
@@ -117,6 +133,8 @@ export type RouteProgress = {
   finalDescent: boolean
   /** On a detour round buildings too tall to fly over. */
   detour: boolean
+  /** Flying home (the Return button) rather than a planned route. */
+  returning: boolean
 }
 
 /** Pre-flight choice: free flying with the keyboard, or a planned route to a destination. */
@@ -156,6 +174,8 @@ export function useDrone({ pickLocation }: Options = {}) {
     routeRunRef.current = run
     setRouteRun(run)
   }, [])
+  /** The last planned route flown: where it started and its path (Return can retrace it). */
+  const lastRoute = useRef<{ start: LatLon; path: FlyToTarget[] } | null>(null)
   /** Starts step i of the route being flown (set in an effect: it needs the command helpers). */
   const runStepRef = useRef<(i: number) => void>(() => {})
   const [routeSafety, setRouteSafety] = useState<RouteSafety | null>(null)
@@ -282,7 +302,13 @@ export function useDrone({ pickLocation }: Options = {}) {
       const nextFly = run.steps.find((st, k) => k > i && st.kind === 'fly')
       const s = stateRef.current
       const phase: RoutePhase =
-        step.kind === 'fly' ? 'flying' : step.kind === 'vertical' && s && step.altM < s.relAltM ? 'descending' : 'climbing'
+        step.kind === 'fly'
+          ? 'flying'
+          : step.kind === 'land'
+            ? 'landing'
+            : step.kind === 'vertical' && s && step.altM < s.relAltM
+              ? 'descending'
+              : 'climbing'
       const next = { ...run, i, phase }
       updateRun(next)
       if (step.kind === 'fly') {
@@ -293,6 +319,8 @@ export function useDrone({ pickLocation }: Options = {}) {
           // Show where it's heading (the take-off command clears any fly-to target).
           if (ok && nextFly?.kind === 'fly') droneView?.setTarget(nextFly.dest)
         })
+      } else if (step.kind === 'land') {
+        void px4Command('land').then(fail) // done once landed (the HUD listener resets the run)
       } else {
         if (nextFly?.kind === 'fly') droneView?.setTarget(nextFly.dest)
         const at = step.atStart && s ? s : step
@@ -332,12 +360,48 @@ export function useDrone({ pickLocation }: Options = {}) {
   // Return home: PX4 climbs to its return height and flies straight home, not knowing about
   // buildings. Keep that height clear of the buildings between the drone and home, rechecked
   // every ~10 m the drone moves (left alone during a return, which has already started).
+  // While flying, also keep a path home round any buildings too tall to fly over loaded in
+  // PX4 (as a mission its Return follows), re-sent every RETURN_PATH_EVERY_M or so.
   const [returnPlan, setReturnPlan] = useState<ReturnPlan | null>(null)
   const returnSending = useRef(false)
+  /** The return path last sent to PX4: from where, and its points (to skip unchanged ones). */
+  const returnPathSent = useRef<{ lat: number; lon: number; sig: string } | null>(null)
   const returnKey =
-    px4Status === 'connected' && hud && !crashed && hud.state.flightMode !== 'Return'
+    px4Status === 'connected' && hud && !crashed && !RETURN_BUSY_MODES.has(hud.state.flightMode)
       ? `${hud.state.lat.toFixed(4)},${hud.state.lon.toFixed(4)}|${hud.state.home.lat.toFixed(5)},${hud.state.home.lon.toFixed(5)}`
       : null
+  /** Sends PX4 a path home round tall buildings, or clears it (on the ground, or no way round). */
+  const updateReturnPath = useCallback(
+    async (s: HudInfo['state']) => {
+      // PX4 restarted (or the bridge did): it has no path any more, whatever was sent.
+      if (returnPathSent.current && returnPathSent.current.sig.startsWith('[') && px4.returnPathPoints === 0)
+        returnPathSent.current = null
+      const sent = returnPathSent.current
+      const send = (points: { lat: number; lon: number; relAltM: number }[], sig: string) => {
+        returnPathSent.current = { lat: s.lat, lon: s.lon, sig }
+        return px4.command('returnPath', { points }).catch((err: unknown) => console.warn('Could not set the return path', err))
+      }
+      if (!s.inAir || !routeSafety) {
+        if (sent && sent.sig !== '') await send([], '')
+        return
+      }
+      if (sent && sent.sig !== '' && distanceM(sent.lon, sent.lat, s.lon, s.lat) < RETURN_PATH_EVERY_M) return
+      const config = simConfigRef.current
+      const home: FlyToTarget = { lat: s.home.lat, lon: s.home.lon, label: 'Home' }
+      const check = await checkRoute(routeSafety, s, [home], config.ceilingM).catch(() => null)
+      if (check?.status !== 'done') return
+      if (routeProblem(check, 0, config.ceilingM)?.kind === 'ceiling') {
+        setReturnPlan((p) => (p ? { ...p, pathHome: false } : p))
+        await send([], 'none') // no way round: PX4's straight return is all there is
+        return
+      }
+      const start = { lat: s.lat, lon: s.lon, relAltM: s.relAltM, inAir: true }
+      const points = missionPoints(s, returnSteps(start, check.path, check.legMinSafeM, RETURN_MIN_ALT_M, false))
+      setReturnPlan((p) => (p ? { ...p, pathHome: true } : p))
+      await send(points, JSON.stringify(points))
+    },
+    [px4, routeSafety],
+  )
   useEffect(() => {
     const s = stateRef.current
     if (!returnKey || !routeSafety || !s) return
@@ -348,7 +412,14 @@ export function useDrone({ pickLocation }: Options = {}) {
         if (cancelled) return
         const max = returnMaxAltM(simConfigRef.current)
         const altM = Math.max(RETURN_MIN_ALT_M, Math.min(max, r.minSafeRelAltM))
-        setReturnPlan({ altM, highest: describe(r.highest), safe: r.minSafeRelAltM <= max, maxM: max })
+        setReturnPlan((prev) => ({
+          altM,
+          highest: describe(r.highest),
+          safe: r.minSafeRelAltM <= max,
+          maxM: max,
+          pathHome: s.inAir ? (prev?.pathHome ?? null) : null,
+        }))
+        void updateReturnPath(s)
         // Tell PX4 when it changed (the bridge reports what's set, so a PX4 restart is picked up).
         if (returnSending.current || Math.abs((px4.returnAltM ?? -1) - altM) < 1) return
         returnSending.current = true
@@ -362,7 +433,7 @@ export function useDrone({ pickLocation }: Options = {}) {
       cancelled = true
     }
     // simConfig.ceilingM: a new ceiling changes the highest Return may fly.
-  }, [returnKey, routeSafety, px4, simConfig.ceilingM])
+  }, [returnKey, routeSafety, px4, simConfig.ceilingM, updateReturnPath])
 
   const routeCheck: RouteCheckInfo | null = !checkKey
     ? null
@@ -410,7 +481,8 @@ export function useDrone({ pickLocation }: Options = {}) {
       stopCount: real.length,
       stopLabel: stops[next[0]]?.label ?? 'the destination',
       detour: !!stops[at]?.via,
-      heightM: step ? step.altM : routeRun.altM,
+      returning: routeRun.kind === 'return',
+      heightM: step ? ('altM' in step ? step.altM : 0) : routeRun.altM,
       remaining: step && start ? estimateRoute(start, steps.slice(i), simConfig) : null,
       finalDescent: phase === 'descending' && !steps.some((st, k) => k > i && st.kind === 'fly'),
     }
@@ -511,7 +583,8 @@ export function useDrone({ pickLocation }: Options = {}) {
       }
       const steps = routeSteps(start, path, legMinSafe, altM)
       setAutopilot(true)
-      updateRun({ steps, i: -1, stops: path, altM, phase: 'climbing' })
+      lastRoute.current = { start: { lat: s.lat, lon: s.lon }, path }
+      updateRun({ steps, i: -1, stops: path, altM, phase: 'climbing', kind: 'route' })
       runStepRef.current(0)
     },
     [routeStops, routeSafety, updateRun],
@@ -552,6 +625,44 @@ export function useDrone({ pickLocation }: Options = {}) {
   const canFly = px4Status === 'connected' && !crashed && !autopilot && (hud?.state.inAir ?? false)
   useEffect(() => keyboardRef.current?.setEnabled(canFly), [canFly])
   useEffect(() => keyboardRef.current?.setHorizontalSpeed(simConfig.keyboardMs), [simConfig.keyboardMs])
+
+  /**
+   * Return button: fly home from wherever the drone is, on autopilot. Straight if nothing
+   * is in the way under the ceiling; else the shortest way round the buildings (as planned
+   * routes do); else back the way the last route came. Then land (or hover, per the sim
+   * config). PX4's own straight-line Return is the last resort.
+   */
+  const returnHome = useCallback(async () => {
+    const s = stateRef.current
+    const config = simConfigRef.current
+    const pxReturn = (why: string | null) => {
+      if (why) setPx4Error(why)
+      void px4Command('rtl')
+    }
+    if (!s?.home || !routeSafety) return pxReturn(null)
+    keyboardRef.current?.interrupt()
+    setPx4Busy('rtl')
+    const home: FlyToTarget = { lat: s.home.lat, lon: s.home.lon, label: 'Home' }
+    let check = await checkRoute(routeSafety, s, [home], config.ceilingM).catch(() => null)
+    const blocked = (c: RouteCheckInfo | null) => c?.status !== 'done' || routeProblem(c, 0, config.ceilingM)?.kind === 'ceiling'
+    const last = lastRoute.current
+    if (blocked(check) && last) {
+      // Back the way the last route came: its stops in reverse, its start, then home.
+      const back = [...last.path].reverse().slice(1)
+      const retrace = [...back, { ...last.start, label: 'Start', via: true }, home]
+      check = await checkRoute(routeSafety, s, retrace, config.ceilingM).catch(() => null)
+    }
+    setPx4Busy(null)
+    if (!check || check.status !== 'done' || blocked(check))
+      return pxReturn('No way home round the buildings found: PX4 is flying straight home (watch for tall buildings).')
+    const start = { lat: s.lat, lon: s.lon, relAltM: s.relAltM, inAir: inAirRef.current }
+    const steps = returnSteps(start, check.path, check.legMinSafeM, RETURN_MIN_ALT_M, config.afterReturn === 'land')
+    setMission('free')
+    setRouteStops([])
+    setAutopilot(true)
+    updateRun({ steps, i: -1, stops: check.path, altM: RETURN_MIN_ALT_M, phase: 'climbing', kind: 'return' })
+    runStepRef.current(0)
+  }, [routeSafety, px4Command, updateRun])
 
   // Building collisions: PX4 doesn't know about buildings, so the app decides it crashed.
   // The drone is drawn falling from the impact point at the wall (never inside), and with
@@ -623,6 +734,7 @@ export function useDrone({ pickLocation }: Options = {}) {
         battery,
         autopilot,
         onTakeOver: takeOver,
+        onReturnHome: () => void returnHome(),
       },
       inAir: hud?.state.inAir ?? false,
       armed: hud?.state.armed ?? false,
@@ -662,6 +774,11 @@ function batteryFor(
   const home = estimateReturn(last, s.home ?? { lat: s.lat, lon: s.lon }, endAltM, returnAltM, config)
   return { ...checkBattery(s.battery, route, home, config), home }
 }
+
+/** Re-send the path home to PX4 after the drone moves this far, metres. */
+const RETURN_PATH_EVERY_M = 25
+/** Flight modes in which PX4 may be flying the return path: it's left alone then. */
+const RETURN_BUSY_MODES = new Set(['Return', 'Mission', 'Land'])
 
 /** Detours are flown this far under the ceiling (like Return), well clear of a geofence breach. */
 const DETOUR_BELOW_CEILING_M = 5

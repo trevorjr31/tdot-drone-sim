@@ -105,17 +105,31 @@ The fence comes from `frontend/public/data/toronto/boundary-fence.geojson` (made
 `npm run data`, mounted read-only into the bridge). PX4 stores at most 64 fence points,
 so the boundary is simplified to ~50 points, within about 500 m of the true line.
 
-### Return home height
+### Return home
 
-PX4's Return mode climbs to its return height and flies **straight** home, without knowing
-about buildings, and near home its "return cone" lets it come back lower still. So on every
-(re)connect the bridge turns the cone off and sets a high, safe default (5 m under the
-ceiling, 115 m by default). While the app is open it works out the safe height for the straight line from
-the drone to home (10 m above the tallest City building on it) and sends it as `returnAlt`
-every time it changes; PX4 climbs to it on the spot before heading home, whatever starts
-the return (the Return button, a geofence breach, a PX4 failsafe). If a building on the way
-is too tall to clear under that, the app warns in the drone panel. With the app closed,
-PX4 keeps the last height it was given.
+Return goes home the shortest safe way from wherever the drone is: straight if nothing on
+the line is too tall to clear under the ceiling, otherwise round the buildings in the way
+by the same shortest-path search as planned routes (see the frontend README), with each
+leg at the height that clears its buildings.
+
+- **The Return button**: the app plans that path and flies it on autopilot (back the way
+  the last route came if there's no other way round), then lands at home, or hovers there
+  if Settings → Simulation says so. Only if there's no way at all does it fall back to
+  PX4's own Return, with a warning.
+- **PX4's own returns** (a geofence breach, low battery): PX4's Return normally flies
+  straight home. While the app is open and the drone is flying, the app keeps the path
+  home loaded in PX4 as a mission (`returnPath`, re-sent every ~25 m the drone moves),
+  and the bridge sets `RTL_TYPE` 2, so PX4's Return follows that mission backwards: from
+  the drone, round the buildings, home, then lands. Each height change is a pair of
+  points at one spot, so PX4 climbs or descends there, not along a leg. The path is left
+  alone during a return or landing, and cleared on landing, when PX4 reconnects, or when
+  the last app disconnects (a path from an old position isn't safe to follow); PX4 then
+  returns straight home again.
+- **The straight-line height**: for that case, on every (re)connect the bridge turns PX4's
+  return cone off (it would let it come back lower near home) and sets a high default
+  (5 m under the ceiling, 115 m by default); while the app is open it keeps the height at
+  10 m above the tallest building on the straight line home (`returnAlt`). If there's no
+  way home round the buildings at all, the drone panel warns.
 
 If PX4 takes over while you're flying with the keyboard (geofence, failsafe), the bridge
 won't take control back until the keys are released, since re-entering offboard would
@@ -179,9 +193,9 @@ WebSocket protocol (see [sim/bridge/bridge.py](sim/bridge/bridge.py)):
 
 | Direction | Message |
 |---|---|
-| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…},"returnAltM":99,"config":{…}}` on connect and on change (`config`: the sim settings) |
+| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…},"returnAltM":99,"returnPathPoints":4,"config":{…}}` on connect and on change (`config`: the sim settings) |
 | bridge → app | `{"type":"state","state":{…}}` at 20 Hz, same fields as the app's `DroneState` |
-| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `crash`, `reset`, `returnAlt` with `relAltM`: Return's height, doesn't interrupt keyboard flying; `config` with some sim settings: checked, saved and applied, works without PX4) |
+| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `crash`, `reset`, `returnAlt` with `relAltM`: Return's height, and `returnPath` with `points` (drone → home, `lat`/`lon`/`relAltM`): the path PX4's Return follows, both leave keyboard flying alone; `config` with some sim settings: checked, saved and applied, works without PX4) |
 | bridge → app | `{"type":"ack","id":"…","ok":false,"error":"…"}` with PX4's reason if refused |
 | app → bridge | `{"type":"velocity","forwardMs":5,"rightMs":0,"downMs":0,"yawRateDegS":0}` ~10 Hz while keys are held (keyboard flying; body frame, down positive) |
 | bridge → app | `{"type":"notice","level":"error","message":"…"}` e.g. "Take off first" |

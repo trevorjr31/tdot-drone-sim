@@ -110,8 +110,11 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   **Plan a route** at the bottom opens the route planner in the air: choose the stops
   and height, then **Fly there** hands over to the autopilot (same route safety; from the
   air it never descends before arriving). *Back* returns to the controls.
-  **Return** flies home at a height that clears the buildings in the way (see "Return home
-  height" in the top-level README); if none can under the ceiling, the panel warns.
+  **Return** flies home on autopilot by the shortest safe way: straight, or round buildings
+  too tall to fly over, each leg at a height that clears its buildings, then lands. While
+  flying, the same path is kept loaded in PX4 so its own returns (geofence, low battery)
+  follow it too (see "Return home" in the top-level README). If there's no way round under
+  the ceiling at all, the panel warns.
   **Land** over a building asks first: PX4 lands straight down and doesn't know the
   building is there, so the drone would crash onto the roof. *Return home* is offered
   instead.

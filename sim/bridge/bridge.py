@@ -10,9 +10,10 @@ MAVSDK and exposes a WebSocket the React app talks to:
                    {"type": "ack",    "id": str, "ok": bool, "error": str|null}
                    {"type": "notice", "level": "error", "message": str}   (e.g. offboard refused)
   client → server  {"type": "command", "id": str,
-                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset"|"returnAlt"|"config",
+                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset"|"returnAlt"|"returnPath"|"config",
                     "altitudeM"?: number, "lat"?: number, "lon"?: number, "relAltM"?: number,
-                    "config"?: {...some SimConfig fields}}
+                    "config"?: {...some SimConfig fields},
+                    "points"?: [{"lat", "lon", "relAltM"}, ...]}  (returnPath: drone → home)
                    {"type": "velocity", "forwardMs": n, "rightMs": n, "downMs": n, "yawRateDegS": n}
                      Keyboard flying: body-frame velocity, sent ~10 Hz while keys are held.
                      The bridge switches PX4 to offboard mode and streams the setpoint. If the
@@ -37,6 +38,16 @@ it return lower near home) and sets a high default (5 m under the ceiling); whil
 is open it sends "returnAlt" with a height that clears the buildings between the drone
 and home (it has the City building data). Unlike other commands, "returnAlt" doesn't
 interrupt keyboard flying.
+
+Return path: PX4's Return flies straight home, but with RTL_TYPE 2 it follows an uploaded
+mission backwards instead. While the app is open it sends "returnPath": a path home from
+the drone that goes round buildings too tall to fly over (each leg at its own height, two
+points at a spot where the height changes, so PX4 changes height there rather than along
+the way). The bridge uploads it as a mission, home first, with the drone's end as the
+current item, so PX4's own returns (geofence, low battery, the Return command) follow it
+back. It's never changed during a return or landing; an empty path, a PX4 reconnect, or
+the last app disconnecting clears it and PX4 goes back to the straight line (a path from
+an old position isn't safe to follow).
 
 Sim config: speeds, battery behaviour, the geofence ceiling and breach action, and what
 happens after a return (CONFIG_SPEC) are set from the app's Settings with the "config"
@@ -72,6 +83,7 @@ import time
 from mavsdk_grpc import System
 from mavsdk_grpc.geofence import FenceType, GeofenceData, Point, Polygon
 from mavsdk_grpc.offboard import VelocityBodyYawspeed
+from mavsdk_grpc.mission import MissionItem, MissionPlan
 from mavsdk_grpc.shell import Device
 from websockets.asyncio.server import ServerConnection, broadcast, serve
 from websockets.exceptions import ConnectionClosed
@@ -134,8 +146,13 @@ MANAGED_PARAMS = [
     "MPC_XY_CRUISE", "MPC_Z_VEL_MAX_UP", "MPC_Z_VEL_MAX_DN", "MPC_Z_V_AUTO_UP", "MPC_Z_V_AUTO_DN",
     "MPC_TKO_SPEED", "MPC_LAND_SPEED", "SIM_BAT_DRAIN", "SIM_BAT_MIN_PCT", "BAT_LOW_THR", "BAT_CRIT_THR",
     "BAT_EMERGEN_THR", "GF_MAX_VER_DIST", "RTL_LAND_DELAY", "COM_LOW_BAT_ACT", "GF_ACTION", "RTL_CONE_ANG",
-    "RTL_RETURN_ALT",
+    "RTL_RETURN_ALT", "RTL_TYPE",
 ]
+# RTL_TYPE: 0 straight home; 2 back along the uploaded mission (the return path).
+RTL_TYPE_DIRECT = 0
+RTL_TYPE_REVERSE_MISSION = 2
+# Flight modes in which the return path mustn't change (PX4 may be flying it).
+RETURN_BUSY_MODES = {"Return", "Mission", "Land"}
 # PX4 values for the choices.
 LOW_BATTERY_ACTIONS = {"warn": 0, "land": 2, "return": 3}  # COM_LOW_BAT_ACT (3: Return, then land at emergency)
 FENCE_ACTIONS = {"warn": 1, "hold": 2, "return": 3, "land": 5}  # GF_ACTION
@@ -265,6 +282,8 @@ class Bridge:
         self.drain_sent: float | None = None
         self.shell_lock = asyncio.Lock()
         self.shell_prompt = asyncio.Event()
+        # Points in the return path uploaded to PX4 (0: none, PX4 returns straight home).
+        self.return_path_points = 0
         self.offboard_started_at = 0.0
         # PX4 left offboard on its own (geofence, failsafe, …). Restarting offboard while keys are
         # still held would count as a pilot takeover and cancel PX4's failsafe, so wait for a release.
@@ -431,9 +450,13 @@ class Bridge:
         self.return_alt = None
         try:
             # Saved values would override the defaults the bridge sets; one save, before anything flies.
-            await self.px4_shell("param reset " + " ".join(MANAGED_PARAMS))
+            # A few at a time: PX4's console cuts long lines into separate commands.
+            for i in range(0, len(MANAGED_PARAMS), 3):
+                await self.px4_shell("param reset " + " ".join(MANAGED_PARAMS[i : i + 3]))
             await self.set_param("RTL_CONE_ANG", 0)
             await self.set_param("SIM_BAT_MIN_PCT", 0.0)  # PX4's default stops at 50%
+            self.return_path_points = 0
+            await self.set_param("RTL_TYPE", RTL_TYPE_DIRECT)  # until the app sends a return path
             await self.set_return_alt(self.return_alt_max)
         except Exception as e:  # noqa: BLE001
             log.warning("Could not set up Return home: %s", e)
@@ -515,6 +538,46 @@ class Bridge:
             except Exception as e:  # noqa: BLE001 - e.g. PX4 restarting
                 log.debug("Could not set the battery drain: %s", e)
 
+    async def set_return_path(self, points: list) -> None:
+        """Uploads the path home as a mission for PX4's Return to follow (see the docstring); [] clears it."""
+        if self.s["flightMode"] in RETURN_BUSY_MODES:
+            log.debug("Return path not changed: PX4 is in %s", self.s["flightMode"])
+            return
+        if not points:
+            if self.return_path_points:
+                await self.set_param("RTL_TYPE", RTL_TYPE_DIRECT)
+                await self.drone.mission.clear_mission()
+                self.return_path_points = 0
+                log.info("Return path cleared: PX4 returns straight home")
+                self.broadcast_status()
+            return
+        ceiling = self.config["ceilingM"] - RETURN_BELOW_CEILING_M
+        items = []
+        for p in reversed(points):  # home first: PX4 flies it backwards, from the drone
+            lat, lon, rel = float(p["lat"]), float(p["lon"]), float(p["relAltM"])
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180 and math.isfinite(rel)):
+                raise ValueError("Bad return path point")
+            items.append(
+                MissionItem(
+                    lat, lon, max(RETURN_ALT_MIN_M, min(ceiling, rel)), self.config["cruiseMs"], True,
+                    math.nan, math.nan, MissionItem.CameraAction.NONE, math.nan, math.nan, math.nan, math.nan,
+                    math.nan, MissionItem.VehicleAction.NONE,
+                )
+            )
+        await self.drone.mission.upload_mission(MissionPlan(items))
+        await self.drone.mission.set_current_mission_item(len(items) - 1)
+        if not self.return_path_points:
+            await self.set_param("RTL_TYPE", RTL_TYPE_REVERSE_MISSION)
+            log.info("Return path set (%d points): PX4's Return follows it round buildings", len(items))
+        self.return_path_points = len(items)
+        self.broadcast_status()
+
+    async def clear_return_path(self) -> None:
+        try:
+            await self.set_return_path([])
+        except Exception as e:  # noqa: BLE001
+            log.warning("Could not clear the return path: %s", e)
+
     async def set_return_alt(self, rel_alt_m: float) -> None:
         alt = round(max(RETURN_ALT_MIN_M, min(self.return_alt_max, rel_alt_m)), 1)
         if alt == self.return_alt:
@@ -584,6 +647,9 @@ class Bridge:
         if action == "returnAlt":
             # A setting, not a flight command: leave keyboard flying alone.
             await self.set_return_alt(float(msg["relAltM"]))
+            return
+        if action == "returnPath":
+            await self.set_return_path(list(msg.get("points") or []))
             return
         # Any explicit command takes over from keyboard flying (a deliberate switch, so no block).
         self.offboard_active = False
@@ -739,6 +805,7 @@ class Bridge:
                 "px4Version": self.px4_version,
                 "geofence": self.geofence,
                 "returnAltM": self.return_alt,
+                "returnPathPoints": self.return_path_points,
                 "config": self.config,
                 "resetting": self.resetting,
             }
@@ -766,6 +833,9 @@ class Bridge:
         finally:
             self.clients.discard(ws)
             log.info("Client disconnected (%d left)", len(self.clients))
+            if not self.clients and self.px4_connected and self.return_path_points:
+                # Nobody to keep the path up to date as the drone moves: back to the straight line.
+                asyncio.create_task(self.clear_return_path())
 
     async def handle_command(self, ws: ServerConnection, msg: dict) -> None:
         action = str(msg.get("action", ""))
@@ -781,7 +851,7 @@ class Bridge:
             reply.update(ok=False, error="PX4 is not connected")
         else:
             try:
-                (log.debug if action == "returnAlt" else log.info)("Command: %s", action)
+                (log.debug if action in ("returnAlt", "returnPath") else log.info)("Command: %s", action)
                 await self.run_command(action, msg)
             except Exception as e:  # noqa: BLE001 - report PX4's refusal back to the user
                 log.warning("Command %s failed: %s", action, e)
