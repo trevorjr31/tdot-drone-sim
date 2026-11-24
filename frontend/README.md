@@ -123,7 +123,9 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
   and a warning above Transport Canada's 122 m (400 ft) limit. **Settings → Flight
   readouts** hides it (remembered in this browser); crash, collision and height-limit
   warnings still appear.
-- The model is drawn 4× real size so it's visible from the chase camera; a red dot marks
+- The model is a small X-frame quadcopter (front propellers red, back ones light, so the
+  heading reads from any angle) whose propellers spin while it's armed and spin down when
+  it disarms or crashes. It's drawn 4× real size so it's visible from the chase camera; a red dot marks
   it from far away, a dashed line drops to the ground, and a yellow trail shows the path.
 - **Building collisions**: every state is checked against City massing footprints near the
   drone (tiles load around it; the massing is never drawn on the map). Inside a
