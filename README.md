@@ -150,8 +150,9 @@ app or no app. The app shows the minutes left in the HUD (estimated from how fas
 battery is dropping) and warns in the drone panel at each level.
 
 Planned routes are checked before take-off: the app estimates the battery for the route
-and for PX4's Return home from the last stop (with the same load model, at the configured
-speeds) and refuses routes that would get home with less than the critical level. In the
+and for the flight home from the last stop as Return would fly it (straight, or round
+tall buildings, each leg at its height, then landing), with the same load model at the
+configured speeds, and refuses routes that would get home with less than the critical level. In the
 sim, a short route came within a few percent: it arrived with 67% (62% predicted), and the
 flight home used 34% (33% predicted). To try the limits, set a short battery under
 Settings → Simulation.

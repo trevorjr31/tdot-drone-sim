@@ -82,8 +82,8 @@ the address with `VITE_BRIDGE_URL`. Telemetry arrives as a
     more stops the same way (up to 8) to visit them in order, reorder them with ↑ or
     remove them with ×. Set the **height** to arrive at and **Take off**. The panel shows
     the route's **distance and flight time** (at the sim config's speeds, calibrated in the
-    sim) and its **battery**: what's left at the last stop and back home after PX4's Return
-    from there. Take off is refused if it would get home with less than the critical level
+    sim) and its **battery**: what's left at the last stop and back home after flying home
+    from there the way Return would (round tall buildings if it has to). Take off is refused if it would get home with less than the critical level
     (15% by default). The map shows the stops and the path in grey. The drone flies the route on autopilot: the panel shows which
     stop it's heading for, the distance and time to go, and a single **Take over controls**
     button, which stops the autopilot (PX4 holds where it is) and switches to the manual

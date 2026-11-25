@@ -49,8 +49,15 @@ export type RouteCheckInfo =
       destHighest: { name: string | null; heightM: number } | null
       /** Lowest safe crossing height for each leg (drone → stop 1, stop 1 → stop 2, …). */
       legMinSafeM: number[]
-      /** Lowest safe height for the flight home from the last stop (Return's height there). */
+      /** Lowest safe height for the straight line home from the last stop (PX4's own Return height there). */
       returnMinSafeM: number
+      /**
+       * The way home from the last stop, as Return flies it: straight, or round buildings too
+       * tall to fly over (via points), ending at home; homeLegMinSafeM is per leg. null if
+       * there's no way round (PX4 would fly straight).
+       */
+      homePath: FlyToTarget[] | null
+      homeLegMinSafeM: number[]
       /**
        * The route as flown: the stops, with turning points (`via`) added where a leg goes
        * round buildings too tall to cross under the ceiling. legMinSafeM is per leg of this.
@@ -455,7 +462,7 @@ export function useDrone({ pickLocation }: Options = {}) {
   const routeEstimate = planSteps && start ? estimateRoute(start, planSteps, simConfig) : null
   const routeBattery =
     planSteps && start && hud && routeEstimate && routeCheck?.status === 'done'
-      ? batteryFor(routeEstimate, planPath, routeCheck.returnMinSafeM, planAltM, hud.state, simConfig)
+      ? batteryFor(routeEstimate, planPath, routeCheck, planAltM, hud.state, simConfig)
       : null
   const preview = planSteps
     ? planPreview(planPath, planSteps)
@@ -572,7 +579,7 @@ export function useDrone({ pickLocation }: Options = {}) {
           path = check.path
           // Enough battery for the route and the flight home after it?
           const steps = routeSteps(start, path, legMinSafe, altM)
-          const b = batteryFor(estimateRoute(start, steps, config), path, check.returnMinSafeM, altM, s, config)
+          const b = batteryFor(estimateRoute(start, steps, config), path, check, altM, s, config)
           if (!b.ok) {
             setPx4Error(
               `Not enough battery: this route and the flight home would leave ${pct(b.atHome)}, under the ${pct(b.reserve)} reserve.`,
@@ -764,14 +771,23 @@ function pct(x: number) {
 function batteryFor(
   route: RouteEstimate,
   stops: FlyToTarget[],
-  returnMinSafeM: number,
+  check: Extract<RouteCheckInfo, { status: 'done' }>,
   endAltM: number,
   s: HudInfo['state'],
   config: SimConfig,
 ): RouteBattery {
   const last = stops[stops.length - 1]
-  const returnAltM = Math.max(RETURN_MIN_ALT_M, Math.min(returnMaxAltM(config), returnMinSafeM))
-  const home = estimateReturn(last, s.home ?? { lat: s.lat, lon: s.lon }, endAltM, returnAltM, config)
+  let home: RouteEstimate
+  if (check.homePath) {
+    // As Return flies it from the last stop: each leg at its height, round any tall buildings, then land.
+    const from = { lat: last.lat, lon: last.lon, relAltM: endAltM, inAir: true }
+    const land = config.afterReturn === 'land'
+    home = estimateRoute(from, returnSteps(from, check.homePath, check.homeLegMinSafeM, RETURN_MIN_ALT_M, land), config)
+  } else {
+    // No way round: PX4's straight Return at its highest.
+    const returnAltM = Math.max(RETURN_MIN_ALT_M, Math.min(returnMaxAltM(config), check.returnMinSafeM))
+    home = estimateReturn(last, s.home ?? { lat: s.lat, lon: s.lon }, endAltM, returnAltM, config)
+  }
   return { ...checkBattery(s.battery, route, home, config), home }
 }
 
@@ -788,6 +804,42 @@ const DETOUR_BELOW_CEILING_M = 5
  * panel shows them. A leg that can't be flown straight under the ceiling goes round the
  * buildings in the way instead, by the shortest path (see detour.ts), if there is one.
  */
+/**
+ * Legs from `from` through `stops`, each straight if it can be flown under the ceiling,
+ * else round the buildings in the way by the shortest path (see detour.ts), if there is one.
+ */
+async function planLegs(safety: RouteSafety, from: LatLon, stops: FlyToTarget[], homeAmslM: number, ceilingM: number) {
+  const points: LatLon[] = [from, ...stops]
+  const path: FlyToTarget[] = []
+  const legs: RouteCheck[] = []
+  const detours: { around: { name: string | null; heightM: number } | null; extraM: number }[] = []
+  let blocked: RouteCheck | null = null
+  for (let i = 0; i < stops.length; i++) {
+    const a = points[i]
+    const to = stops[i]
+    const direct = await safety.check(a, to, homeAmslM)
+    const via = direct.minSafeRelAltM > ceilingM ? await safety.detour(a, to, homeAmslM, ceilingM - DETOUR_BELOW_CEILING_M) : []
+    if (!via || (direct.minSafeRelAltM > ceilingM && via.length === 0)) {
+      blocked ??= direct // no way round
+      path.push(to)
+      legs.push(direct)
+      continue
+    }
+    const pts = [a, ...via, to]
+    const sub = via.length ? await Promise.all(pts.slice(1).map((p, k) => safety.check(pts[k], p, homeAmslM))) : [direct]
+    for (const p of via) path.push({ lat: p.lat, lon: p.lon, label: `Detour to ${to.label}`, via: true })
+    path.push(to)
+    legs.push(...sub)
+    if (via.length) detours.push({ around: describe(direct.highest), extraM: pathLengthM(pts) - pathLengthM([a, to]) })
+  }
+  return { path, legs, detours, blocked }
+}
+
+/**
+ * Buildings along each leg of the route (drone → first stop → … → last stop), as the
+ * panel shows them, going round any too tall to cross under the ceiling; and the way home
+ * from the last stop, planned the same way (as Return flies it).
+ */
 async function checkRoute(
   safety: RouteSafety,
   s: HudInfo['state'],
@@ -796,30 +848,9 @@ async function checkRoute(
 ): Promise<RouteCheckInfo> {
   const homeAmslM = s.home?.altAmslM ?? s.altAmslM - s.relAltM
   const homePoint = s.home ?? { lat: s.lat, lon: s.lon }
-  const points: LatLon[] = [{ lat: s.lat, lon: s.lon }, ...stops]
-  const path: FlyToTarget[] = []
-  const legs: RouteCheck[] = []
-  const detours: { around: { name: string | null; heightM: number } | null; extraM: number }[] = []
-  let blocked: RouteCheck | null = null
-  for (let i = 0; i < stops.length; i++) {
-    const from = points[i]
-    const to = stops[i]
-    const direct = await safety.check(from, to, homeAmslM)
-    const via = direct.minSafeRelAltM > ceilingM ? await safety.detour(from, to, homeAmslM, ceilingM - DETOUR_BELOW_CEILING_M) : []
-    if (!via || (direct.minSafeRelAltM > ceilingM && via.length === 0)) {
-      blocked ??= direct // no way round: the route can't be flown
-      path.push(to)
-      legs.push(direct)
-      continue
-    }
-    const pts = [from, ...via, to]
-    const sub = via.length ? await Promise.all(pts.slice(1).map((p, k) => safety.check(pts[k], p, homeAmslM))) : [direct]
-    for (const p of via) path.push({ lat: p.lat, lon: p.lon, label: `Detour to ${to.label}`, via: true })
-    path.push(to)
-    legs.push(...sub)
-    if (via.length) detours.push({ around: describe(direct.highest), extraM: pathLengthM(pts) - pathLengthM([from, to]) })
-  }
-  const home = await safety.check(stops[stops.length - 1], homePoint, homeAmslM)
+  const { path, legs, detours, blocked } = await planLegs(safety, { lat: s.lat, lon: s.lon }, stops, homeAmslM, ceilingM)
+  const home: FlyToTarget = { lat: homePoint.lat, lon: homePoint.lon, label: 'Home' }
+  const back = await planLegs(safety, stops[stops.length - 1], [home], homeAmslM, ceilingM)
   const worst = blocked ?? legs.reduce((w, r) => (r.minSafeRelAltM > w.minSafeRelAltM ? r : w), legs[0])
   const last = legs[legs.length - 1]
   return {
@@ -829,7 +860,9 @@ async function checkRoute(
     destMinSafeRelAltM: last.destMinSafeRelAltM,
     destHighest: describe(last.destHighest),
     legMinSafeM: legs.map((r) => r.minSafeRelAltM),
-    returnMinSafeM: home.minSafeRelAltM,
+    returnMinSafeM: back.legs.reduce((m, r) => Math.max(m, r.minSafeRelAltM), 0),
+    homePath: back.blocked ? null : back.path,
+    homeLegMinSafeM: back.legs.map((r) => r.minSafeRelAltM),
     path,
     detours,
   }
