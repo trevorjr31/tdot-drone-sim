@@ -7,6 +7,7 @@
  */
 
 import type { MassingIndex, MassingProps } from './massingGrid'
+import { parsePlaces, type NearbyPlace, type PlacesFile } from '../places/nearby'
 
 // Minimal GeoJSON types for the shapes we produce (Polygon / MultiPolygon only).
 export type Position = [number, number] | [number, number, number]
@@ -53,6 +54,14 @@ async function getJson<T>(file: string): Promise<T> {
 export const loadManifest = () => getJson<DataManifest>('manifest.json')
 export const loadBoundary = () => getJson<FeatureCollection<BoundaryProps>>('boundary.geojson')
 export const loadNeighbourhoods = () => getJson<FeatureCollection<NeighbourhoodProps>>('neighbourhoods.geojson')
+
+/** Places by type from OpenStreetMap (hospitals, parks, …), for "the nearest X". Loaded once. */
+let placesPromise: Promise<NearbyPlace[]> | null = null
+export function loadPlaces(): Promise<NearbyPlace[]> {
+  placesPromise ??= getJson<PlacesFile>('places.json').then(parsePlaces)
+  placesPromise.catch(() => (placesPromise = null)) // retry next time
+  return placesPromise
+}
 
 // --- 3D Massing (tiled) ---------------------------------------------------
 

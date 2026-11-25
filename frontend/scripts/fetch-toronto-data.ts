@@ -1,6 +1,7 @@
 /**
  * Downloads City of Toronto Open Data and converts it into small GeoJSON files
- * the app serves from public/data/toronto/.
+ * the app serves from public/data/toronto/. Also a list of places by type (hospitals,
+ * parks, …) from OpenStreetMap, for "fly to the nearest hospital" (places.json).
  *
  *   npm run data            # download (if not cached) and convert
  *   npm run data -- --refresh   # force fresh downloads
@@ -25,6 +26,7 @@ import {
 } from '../src/data/massingGrid.ts'
 import { joinAddresses, parseCsv, type AddressPoint, type Footprint } from '../src/data/addressJoin.ts'
 import { buildingsFromTile } from '../src/drone/collision.ts'
+import { CATEGORY_LABEL, overpassQuery, placesFile, placesFromOsm, PLACE_CATEGORIES } from '../src/places/nearby.ts'
 
 const run = promisify(execFile)
 
@@ -335,6 +337,70 @@ async function loadAddressPoints() {
   return { pkg, resource, points }
 }
 
+/** Overpass servers, tried in turn: the main one is often busy (502/504). */
+const OVERPASS_SERVERS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+]
+/** [south, west, north, east] around the City boundary. */
+const PLACES_BBOX: [number, number, number, number] = [43.57, -79.65, 43.86, -79.1]
+
+/**
+ * Places by type from OpenStreetMap (Overpass API): hospitals, police and fire stations,
+ * schools, parks, stations, … with a centre and rough size. ~1 MB download, cached.
+ */
+async function processPlaces() {
+  console.log('\n▸ places (OpenStreetMap via Overpass)')
+  const cached = path.join(CACHE_DIR, 'places-overpass.json')
+  if (REFRESH || !existsSync(cached)) {
+    const query = overpassQuery(PLACES_BBOX)
+    let body: string | null = null
+    const failures: string[] = []
+    for (let attempt = 0; attempt < 2 && !body; attempt++) {
+      for (const server of OVERPASS_SERVERS) {
+        console.log(`  asking ${new URL(server).host}…`)
+        try {
+          const res = await fetch(server, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'tdot-drone-sim data script' },
+            body: new URLSearchParams({ data: query }),
+            signal: AbortSignal.timeout(200_000),
+          })
+          const text = await res.text()
+          if (res.ok && text.trimStart().startsWith('{')) {
+            body = text
+            break
+          }
+          failures.push(`${new URL(server).host}: HTTP ${res.status}`)
+        } catch (err) {
+          failures.push(`${new URL(server).host}: ${err instanceof Error ? err.message : err}`)
+        }
+      }
+      if (!body && attempt === 0) await new Promise((r) => setTimeout(r, 20_000))
+    }
+    if (!body) throw new Error(`Overpass servers all failed (try again later):\n    ${failures.join('\n    ')}`)
+    await writeFile(cached, body)
+  } else {
+    console.log('  using cached Overpass answer (pass --refresh to re-download)')
+  }
+
+  const answer = JSON.parse(await readFile(cached, 'utf8')) as { osm3s?: { timestamp_osm_base?: string }; elements: never[] }
+  const places = placesFromOsm(answer.elements)
+  const generatedAt = answer.osm3s?.timestamp_osm_base ?? new Date().toISOString()
+  await writeFile(path.join(OUT_DIR, 'places.json'), JSON.stringify(placesFile(places, generatedAt)))
+  const counts = PLACE_CATEGORIES.map((c) => `${places.filter((p) => p.category === c).length} ${CATEGORY_LABEL[c]}`)
+  console.log(`  wrote public/data/toronto/places.json: ${places.length.toLocaleString()} places (${counts.join(', ')})`)
+  return {
+    id: 'places',
+    file: 'places.json',
+    source: 'https://www.openstreetmap.org/copyright',
+    title: 'OpenStreetMap places (© OpenStreetMap contributors, ODbL)',
+    resource: 'Overpass API',
+    lastRefreshed: generatedAt,
+  }
+}
+
 /** Grows bbox to include every [lon, lat] in nested GeoJSON coordinates. */
 function extendBbox(bbox: [number, number, number, number], coords: unknown) {
   if (!Array.isArray(coords)) return
@@ -356,6 +422,7 @@ async function main() {
   const datasets = []
   for (const ds of DATASETS) if (wanted(ds.id)) datasets.push(await processDataset(ds))
   if (wanted('massing')) datasets.push(...(await processMassing()))
+  if (wanted('places')) datasets.push(await processPlaces())
 
   if (ONLY) {
     // Partial run: leave the full manifest from the last complete run alone.
@@ -366,6 +433,7 @@ async function main() {
   const manifest = {
     generatedAt: new Date().toISOString(),
     attribution: 'Contains information licensed under the Open Government Licence – Toronto.',
+    // places.json carries its own (OpenStreetMap, ODbL).
     datasets,
   }
   await writeFile(path.join(OUT_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2))

@@ -125,7 +125,11 @@ function App() {
           <a href="https://open.toronto.ca/" target="_blank" rel="noopener noreferrer">
             City of Toronto Open Data
           </a>{' '}
-          (OGL – Toronto)
+          (OGL – Toronto). Places:{' '}
+          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">
+            © OpenStreetMap contributors
+          </a>{' '}
+          (ODbL)
         </p>
       </SettingsMenu>
       <DroneHud info={drone.hud} collision={drone.collision} battery={drone.battery} showReadouts={hudVisible} />

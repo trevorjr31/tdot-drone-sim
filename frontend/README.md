@@ -33,6 +33,7 @@ in `.data-cache/`; pass `-- --refresh` to re-download.
 | City boundary for PX4's geofence (~50 points) | `boundary-fence.geojson` |
 | 3D Massing (~430k buildings, newest year) | `massing/{col}_{row}.json` in ~1 km grid tiles + `massing/index.json` (~145 MB total) |
 | Address Points (~525k civic addresses) | joined into the massing tiles (no file of its own) |
+| Places by type from OpenStreetMap (hospitals, police and fire stations, schools, universities, libraries, parks, subway and train stations, stadiums, museums, malls, helipads) | `places.json` |
 
 The massing step takes ~30 s and needs a few GB of RAM. It also downloads the City's
 address points (~175 MB CSV) and gives each building the addresses inside its footprint;
@@ -41,6 +42,13 @@ has no address of its own. About 93% of buildings end up with an address, plus a
 name where the City has one (e.g. "Old City Hall") and the ward. The grid is defined once in
 [src/data/massingGrid.ts](src/data/massingGrid.ts) and shared by the script and the app,
 which loads tiles within ~2.5 km of the camera.
+
+`places.json` comes from OpenStreetMap through the Overpass API (not open.toronto.ca), for
+"the nearest hospital" and the like: the geocoder finds places by name but can't search
+by type near a point. Each place has a centre and rough size; a place mapped twice (a point
+and its building) is kept once. The rules are in [src/places/nearby.ts](src/places/nearby.ts).
+Overpass is often busy, so the script tries a few servers and retries once; run just this
+step with `npm run data -- --only=places`.
 
 City elevations are metres above sea level; Cesium uses the WGS84 ellipsoid. The
 conversion (`TORONTO_GEOID_OFFSET_M` in [src/config.ts](src/config.ts)) was measured
@@ -179,3 +187,4 @@ Buildings are matched by footprint only, because from far away the clicked 3D po
 is too imprecise vertically to tell a roof from the ground.
 
 Contains information licensed under the Open Government Licence – Toronto.
+Places data © OpenStreetMap contributors, under the Open Database Licence (ODbL).
