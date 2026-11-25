@@ -10,7 +10,7 @@
 #   docker compose up px4
 
 # --- Stage 1: build -------------------------------------------------------------
-FROM ubuntu:22.04 AS build
+FROM ubuntu:26.04 AS build
 
 ARG PX4_VERSION=v1.16.2
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -39,7 +39,7 @@ RUN make px4_sitl_default \
  && grep -q 'SDLOG_MODE ${SDLOG_MODE:-1}' build/px4_sitl_default/etc/init.d-posix/rcS
 
 # --- Stage 2: run ----------------------------------------------------------------
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
 ARG PX4_VERSION=v1.16.2
 ENV TZ=America/Toronto \
