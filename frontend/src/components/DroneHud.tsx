@@ -1,3 +1,4 @@
+import { useCallback, useRef } from 'react'
 import type { BatteryInfo } from '../drone/battery'
 import type { HudInfo } from '../drone/droneView'
 import type { CollisionInfo } from '../drone/useCollisions'
@@ -27,6 +28,7 @@ export function DroneHud({
   battery?: BatteryInfo | null
   showReadouts?: boolean
 }) {
+  const hudRef = useHeightVar('--hud-height')
   if (!info) return null
   const { state, aglM, distanceFromHomeM } = info
   // The legal limit is height above ground; fall back to height above launch if ground is unknown.
@@ -40,7 +42,7 @@ export function DroneHud({
   if (!showReadouts && !crashed && !showCollision && !overLimit) return null
 
   return (
-    <section className="hud" aria-label="Drone status" aria-live="off">
+    <section className="hud" ref={hudRef} aria-label="Drone status" aria-live="off">
       {showReadouts && (
         <>
           <div className="hud__status">
@@ -117,5 +119,29 @@ function Readout({
         <span className="hud__unit">{unit}</span>
       </span>
     </div>
+  )
+}
+
+/**
+ * Callback ref that keeps a CSS variable on the page set to the element's height (0px once
+ * it's gone), so the top panels can stop above the readouts (see index.css).
+ */
+function useHeightVar(name: string) {
+  const observer = useRef<ResizeObserver | null>(null)
+  return useCallback(
+    (el: HTMLElement | null) => {
+      observer.current?.disconnect()
+      observer.current = null
+      const root = document.documentElement.style
+      if (!el) {
+        root.setProperty(name, '0px')
+        return
+      }
+      const update = () => root.setProperty(name, `${el.offsetHeight}px`)
+      observer.current = new ResizeObserver(update)
+      observer.current.observe(el)
+      update()
+    },
+    [name],
   )
 }

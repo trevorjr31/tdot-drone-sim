@@ -53,6 +53,15 @@ body,
   --panel-accent: #ffd166;
 }
 
+/*
+ * The top panels (drone, settings) stop 12 px above the flight readouts (bottom right, 36 px
+ * up, height measured by DroneHud into --hud-height; 0 when hidden) and scroll inside.
+ */
+:root {
+  --hud-height: 0px;
+  --top-panels-bottom: calc(36px + var(--hud-height) + 12px);
+}
+
 .sidebar {
   position: absolute;
   top: 12px;
@@ -391,11 +400,27 @@ body,
 
 /* --- Drone panel --------------------------------------------------------- */
 
+.drone-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 12px - var(--top-panels-bottom));
+}
+
+/* The header stays put; the rest scrolls when it doesn't fit above the readouts. */
 .drone-panel__body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
   padding: 0 12px 12px;
+  overflow-y: auto;
+}
+
+/* Inside the scrolling panel the place results are part of it (not floating over it, where they'd be cut off). */
+.drone-panel .search__results {
+  position: static;
+  max-height: none;
+  margin-top: 6px;
 }
 
 .drone-panel__source {
@@ -834,8 +859,8 @@ body,
 .settings__menu {
   width: 240px;
   max-width: calc(100vw - 24px);
-  /* Below the button (12 px + 38 px + 6 px gap), scrolling inside rather than past the window. */
-  max-height: calc(100vh - 68px);
+  /* Below the button (12 px + 38 px + 6 px gap), above the readouts, scrolling inside. */
+  max-height: calc(100vh - 56px - var(--top-panels-bottom));
   overflow-y: auto;
   padding-top: 4px;
 }
