@@ -3,7 +3,7 @@ import type { FlyToTarget } from '../drone/droneView'
 import { formatMinutes, type BatteryInfo } from '../drone/battery'
 import type { SimConfig } from '../drone/simConfig'
 import type { BridgeStatus, GeofenceStatus, Px4Command, Px4CommandParams } from '../drone/px4Bridge'
-import { formatDistance, formatDuration, ROUTE_MAX_STOPS, type RouteEstimate } from '../drone/routePlan'
+import { formatDistance, formatDuration, ROUTE_MAX_STOPS, type RouteEnding, type RouteEstimate } from '../drone/routePlan'
 import {
   crossingAltM,
   routeProblem,
@@ -47,6 +47,9 @@ type Props = {
     composedAltM: { altM: number; id: number } | null
     onComposeRoute: (text: string) => void
     onComposeClear: () => void
+    /** After the last stop: hover there, land there, or come home. */
+    routeEnding: RouteEnding
+    onRouteEnding: (ending: RouteEnding) => void
     /** Add a stop by clicking the map. */
     onPickRouteStop: () => void
     onRemoveStop: (i: number) => void
@@ -236,6 +239,7 @@ function RoutePlanner(
               <span className="drone-panel__stop-name" title={stop.label}>
                 <span className="btn__ellipsis">{stop.label}</span>
                 {stop.building && <span className="drone-panel__stop-tag">Building · {stop.building.heightM} m</span>}
+                {stop.hoverS ? <span className="drone-panel__stop-tag">Hovers {formatDuration(stop.hoverS)}</span> : null}
               </span>
               {i > 0 && (
                 <button type="button" className="btn btn--small" onClick={() => p.onMoveStopUp(i)} aria-label={`Move ${stop.label} earlier`} title="Move earlier">
@@ -285,6 +289,35 @@ function RoutePlanner(
             stops={p.routeStops.length}
             ceilingM={p.ceilingM}
           />
+          <div className="drone-panel__step">At the end</div>
+          <div className="segmented" role="radiogroup" aria-label="After the last stop">
+            {(
+              [
+                ['hover', 'Hover'],
+                ['land', 'Land'],
+                ['return', 'Come home'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={p.routeEnding === value}
+                className={`segmented__option${p.routeEnding === value ? ' is-active' : ''}`}
+                onClick={() => p.onRouteEnding(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {p.routeEnding === 'land' && p.routeCheck?.status === 'done' && p.routeCheck.landOn && (
+            <div className="drone-panel__check is-bad" role="alert">
+              <span>
+                The last stop is on {p.routeCheck.landOn.name ?? 'a building'} ({p.routeCheck.landOn.heightM} m): it would land on
+                the roof. Choose another last stop, or another ending.
+              </span>
+            </div>
+          )}
           {!tooHigh(p.routeCheck, p.ceilingM) && (
             <RouteSummary estimate={p.routeEstimate} battery={p.routeBattery} stops={p.routeStops.length} />
           )}
@@ -292,7 +325,11 @@ function RoutePlanner(
             type="button"
             className="btn btn--primary btn--block"
             disabled={
-              !p.ready || p.busy !== null || routeBlocked(p.routeCheck, altM, p.ceilingM) || p.routeBattery?.ok === false
+              !p.ready ||
+              p.busy !== null ||
+              routeBlocked(p.routeCheck, altM, p.ceilingM) ||
+              p.routeBattery?.ok === false ||
+              (p.routeEnding === 'land' && p.routeCheck?.status === 'done' && !!p.routeCheck.landOn)
             }
             onClick={() => p.onStartRoute(altM)}
           >
@@ -396,9 +433,6 @@ function ComposeBox({ status, onCompose, onClear }: { status: ComposeStatus; onC
               {n}
             </p>
           ))}
-          {status.notYet.length > 0 && (
-            <p className="compose__note is-warn">Not flown automatically yet: {status.notYet.join('; ')}.</p>
-          )}
         </div>
       )}
     </div>
@@ -519,6 +553,12 @@ function Autopilot(p: Props['px4']) {
     ) : (
       <>Home: hovering here (Settings → Simulation: after return)</>
     )
+  ) : r.phase === 'hovering' ? (
+    <>Hovering at {stop}…</>
+  ) : r.phase === 'circling' ? (
+    <>Circling {stop} at {h}…</>
+  ) : r.phase === 'landing' ? (
+    <>Landing at {stop}…</>
   ) : r.phase === 'climbing' ? (
     <>Climbing to {h}, then flying to {stop}…</>
   ) : r.phase === 'flying' ? (

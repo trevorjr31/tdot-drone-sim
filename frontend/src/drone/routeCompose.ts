@@ -148,12 +148,13 @@ export type ComposedCircle = {
 }
 
 export type ComposedRoute = {
-  /** Stops in order, circle turning points marked `via` (hidden, like detour points). */
+  /**
+   * Stops in order: hovers as `hoverS` on their stop, circles as an entry stop with `orbit`
+   * and its points after it marked `via` and `circle` (hidden, like detour points).
+   */
   stops: FlyToTarget[]
   /** A route height asked for before setting off ("at 50 m"), else null (the planner's height). */
   altM: number | null
-  /** Hover this long at a stop (index into `stops`; -1 before setting off). */
-  hovers: { stop: number; seconds: number }[]
   circles: ComposedCircle[]
   /** After the last stop: stay hovering there, land there, or come home (Return). */
   ending: 'hover' | 'land' | 'return'
@@ -173,7 +174,6 @@ type Place = { centre: LatLon; label: string; radiusM: number; key: string }
  */
 export async function compilePlan(plan: ComposePlan, start: ComposeStart, lookups: ComposeLookups): Promise<ComposeResult> {
   const stops: FlyToTarget[] = []
-  const hovers: ComposedRoute['hovers'] = []
   const circles: ComposedCircle[] = []
   const notes: string[] = []
   const problems: string[] = []
@@ -235,7 +235,7 @@ export async function compilePlan(plan: ComposePlan, start: ComposeStart, lookup
         // Around the place just flown to: circle it instead of flying over its middle first.
         let place: Place | string
         let reused = false
-        if (lastPlace && stops.length - 1 === lastPlace.stop && samePlace(step, lastPlace.place) && !hovers.some((h) => h.stop === lastPlace!.stop)) {
+        if (lastPlace && stops.length - 1 === lastPlace.stop && samePlace(step, lastPlace.place) && !stops[lastPlace.stop].hoverS) {
           place = lastPlace.place
           stops.pop()
           at = lastPlace.from
@@ -262,10 +262,14 @@ export async function compilePlan(plan: ComposePlan, start: ComposeStart, lookup
         const perLap = Math.max(8, Math.min(16, Math.round((2 * Math.PI * radiusM) / CIRCLE_POINT_SPACING_M)))
         const what = place.label === 'here' ? 'Circle' : `Circle ${place.label}`
         const firstStop = stops.length
-        goTo({ ...offset(place.centre, fromCentre, radiusM), label: `${what} (${exact(radiusM)} radius${laps > 1 ? `, ${laps} laps` : ''})` })
+        goTo({
+          ...offset(place.centre, fromCentre, radiusM),
+          label: `${what} (${exact(radiusM)} radius${laps > 1 ? `, ${laps} laps` : ''})`,
+          orbit: { ...place.centre, radiusM, laps, clockwise },
+        })
         for (let k = 1; k <= perLap * laps; k++) {
           const b = fromCentre + ((clockwise ? 1 : -1) * 360 * k) / perLap
-          goTo({ ...offset(place.centre, b, radiusM), label: `Circling ${place.label}`, via: true })
+          goTo({ ...offset(place.centre, b, radiusM), label: `Circling ${place.label}`, via: true, circle: true })
         }
         circles.push({ centre: place.centre, radiusM, laps, clockwise, firstStop, lastStop: stops.length - 1 })
         if (reused) lastPlace = null
@@ -286,7 +290,11 @@ export async function compilePlan(plan: ComposePlan, start: ComposeStart, lookup
         const s = step.seconds
         if (s == null || !Number.isFinite(s) || s <= 0) fail('how long to hover?')
         else if (s > HOVER_MAX_S) fail(`the longest hover is ${HOVER_MAX_S / 60} minutes.`)
-        else hovers.push({ stop: stops.length - 1, seconds: Math.round(s) })
+        else if (!stops.length) fail('hover after going somewhere (it hovers when it gets there).')
+        else {
+          const last = stops[stops.length - 1]
+          stops[stops.length - 1] = { ...last, hoverS: (last.hoverS ?? 0) + Math.round(s) }
+        }
         break
       }
 
@@ -307,7 +315,7 @@ export async function compilePlan(plan: ComposePlan, start: ComposeStart, lookup
   if (real > ROUTE_MAX_STOPS) problems.push(`That's ${real} stops; a route can have at most ${ROUTE_MAX_STOPS}.`)
   if (!problems.length && !stops.length && ending !== 'return') problems.push("That route doesn't go anywhere.")
   if (problems.length) return { ok: false, problems }
-  return { ok: true, route: { stops, altM, hovers, circles, ending, notes } }
+  return { ok: true, route: { stops, altM, circles, ending, notes } }
 }
 
 /**
@@ -332,17 +340,28 @@ export async function bendCircles(
     const start = flags.indexOf(false)
     if (start < 0) return null
     if (flags.some(Boolean)) bent = true
+    if (!flags.some(Boolean)) {
+      out.push(...route.stops.slice(c.firstStop, c.lastStop + 1))
+      next = c.lastStop + 1
+      continue
+    }
+    // Bent: flown point to point (round the building), not as an orbit.
     const order = [...ring.slice(start), ...ring.slice(0, start)].filter((_, k) => !flags[(start + k) % ring.length])
-    const entry = { ...order[0], label: ring[0].label, via: undefined }
-    out.push(entry, ...order.slice(1).map((p) => ({ ...p, label: ring[1]?.label ?? p.label, via: true })), {
-      ...entry,
-      label: ring[1]?.label ?? entry.label,
-      via: true,
-    })
+    const { orbit: _orbit, ...first } = ring[0]
+    void _orbit
+    const entry: FlyToTarget = { ...first, lat: order[0].lat, lon: order[0].lon, via: undefined, circle: undefined }
+    const pointLabel = ring[1]?.label ?? entry.label
+    const closing = route.stops[c.lastStop]
+    out.push(
+      entry,
+      ...order.slice(1).map((p) => ({ lat: p.lat, lon: p.lon, label: pointLabel, via: true, circle: true })),
+      { lat: entry.lat, lon: entry.lon, label: pointLabel, via: true, circle: true, ...(closing.hoverS && { hoverS: closing.hoverS }) },
+    )
     next = c.lastStop + 1
   }
   out.push(...route.stops.slice(next))
-  return { stops: out.map(({ via, ...p }) => (via ? { ...p, via } : p)), bent }
+  // Drop undefined flags, so unchanged stops compare equal.
+  return { stops: out.map((p) => Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) as FlyToTarget), bent }
 }
 
 /** A fly_to or circle place: looked up by name or as the nearest of a category. Returns a problem as a string. */

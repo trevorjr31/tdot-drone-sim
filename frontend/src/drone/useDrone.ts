@@ -29,13 +29,14 @@ import {
   missionPoints,
   stepStop,
   type BatteryCheck,
+  type RouteEnding,
   type RouteEstimate,
   type RouteStart,
   type RouteStep,
 } from './routePlan'
 
 /** Where the autopilot is in a planned route. */
-export type RoutePhase = 'climbing' | 'flying' | 'descending' | 'landing' | 'arrived'
+export type RoutePhase = 'climbing' | 'flying' | 'descending' | 'landing' | 'hovering' | 'circling' | 'arrived'
 
 /** Buildings along the planned route (see routeSafety.ts). */
 export type RouteCheckInfo =
@@ -67,6 +68,8 @@ export type RouteCheckInfo =
       path: FlyToTarget[]
       /** Legs that go round buildings: the tallest one in the way, and how much longer it is. */
       detours: { around: { name: string | null; heightM: number } | null; extraM: number }[]
+      /** The building right under the last stop, if any (a route ending by landing would land on its roof). */
+      landOn: { name: string | null; heightM: number } | null
     }
 
 /**
@@ -125,6 +128,8 @@ type RouteRun = {
   phase: RoutePhase
   /** A planned route, or flying home (the Return button). */
   kind: 'route' | 'return'
+  /** After the last step: hover, (land: the last step is a landing), or fly home. */
+  ending: RouteEnding
 }
 
 /** A planned route in flight, as the panel shows it. */
@@ -171,8 +176,6 @@ export type ComposeStatus =
       summary: string
       /** What was looked up ("Nearest hospital: …"). */
       notes: string[]
-      /** Parts of the request the autopilot doesn't fly yet (hovering, landing at the end, …). */
-      notYet: string[]
     }
 
 /** Real stops with the circle points after each, so a circle moves and goes as one. */
@@ -207,6 +210,12 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
   /** A route described in words, and a height it asked for (the planner takes it). */
   const [compose, setCompose] = useState<ComposeStatus>({ state: 'idle' })
   const [composedAltM, setComposedAltM] = useState<{ altM: number; id: number } | null>(null)
+  /** What the route does after its last stop (the planner's "At the end"). */
+  const [routeEnding, setRouteEnding] = useState<RouteEnding>('hover')
+  /** Flying home after a route that ends that way (set once returnHome exists). */
+  const returnHomeRef = useRef<() => void>(() => {})
+  /** An orbit in progress: how far round it has gone from where it started, degrees. */
+  const orbitTrack = useRef<{ prev: number | null; turned: number }>({ prev: null, turned: 0 })
   /** The route being flown (state for rendering, ref for event handlers). */
   const [routeRun, setRouteRun] = useState<RouteRun | null>(null)
   const routeRunRef = useRef<RouteRun | null>(null)
@@ -253,6 +262,7 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
         setMission('choose')
         setRouteStops([])
         setCompose({ state: 'idle' })
+        setRouteEnding('hover')
         updateRun(null)
         setAutopilot(false)
       }
@@ -262,10 +272,18 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
       const step = run?.steps[run.i]
       if (run && step && h) {
         const rel = h.state.relAltM
-        const done =
+        let done =
           step.kind === 'takeoff'
             ? h.state.inAir && rel >= step.altM - ROUTE_HEIGHT_TOLERANCE_M
             : step.kind === 'vertical' && Math.abs(rel - step.altM) <= ROUTE_HEIGHT_TOLERANCE_M
+        if (step.kind === 'orbit' && run.phase === 'circling') {
+          // Count the turning round the centre; done after the laps (back at the entry).
+          const t = orbitTrack.current
+          const b = bearingDeg(step, h.state)
+          if (t.prev !== null) t.turned += ((b - t.prev + 540) % 360) - 180
+          t.prev = b
+          done = Math.abs(t.turned) >= step.laps * 360 - ORBIT_DONE_EARLY_DEG
+        }
         if (done) runStepRef.current(run.i + 1)
       }
     })
@@ -338,6 +356,8 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
       const step = run.steps[i]
       if (!step) {
         updateRun({ ...run, i, phase: 'arrived' })
+        // Ends by coming home: the Return button's flight home (round tall buildings), from here.
+        if (run.kind === 'route' && run.ending === 'return') returnHomeRef.current()
         return
       }
       const nextFly = run.steps.find((st, k) => k > i && st.kind === 'fly')
@@ -347,7 +367,11 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
           ? 'flying'
           : step.kind === 'land'
             ? 'landing'
-            : step.kind === 'vertical' && s && step.altM < s.relAltM
+            : step.kind === 'hover'
+              ? 'hovering'
+              : step.kind === 'orbit'
+                ? 'circling'
+                : step.kind === 'vertical' && s && step.altM < s.relAltM
               ? 'descending'
               : 'climbing'
       const next = { ...run, i, phase }
@@ -362,6 +386,20 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
         })
       } else if (step.kind === 'land') {
         void px4Command('land').then(fail) // done once landed (the HUD listener resets the run)
+      } else if (step.kind === 'hover') {
+        // PX4 holds position after the fly-to; wait, then carry on (unless the run changed meanwhile).
+        window.setTimeout(() => routeRunRef.current === next && runStepRef.current(i + 1), step.seconds * 1000)
+      } else if (step.kind === 'orbit') {
+        orbitTrack.current = { prev: null, turned: 0 }
+        void px4Command('orbit', {
+          lat: step.lat,
+          lon: step.lon,
+          relAltM: step.altM,
+          radiusM: step.radiusM,
+          clockwise: step.clockwise,
+          // PX4 flies orbits at about 70% of this (ORBIT_SPEED_OF_CRUISE, for the estimate).
+          speedMs: simConfigRef.current.cruiseMs,
+        }).then(fail) // done once round (the HUD listener counts the laps)
       } else {
         if (nextFly?.kind === 'fly') droneView?.setTarget(nextFly.dest)
         const at = step.atStart && s ? s : step
@@ -496,7 +534,7 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
   // The route as flown: with detours round tall buildings once the check has found them.
   const planPath = routeCheck?.status === 'done' ? routeCheck.path : routeStops
   const legMinSafeM = routeCheck?.status === 'done' ? routeCheck.legMinSafeM : routeStops.map(() => 0)
-  const planSteps = planning && start ? routeSteps(start, planPath, legMinSafeM, planAltM) : null
+  const planSteps = planning && start ? routeSteps(start, planPath, legMinSafeM, planAltM, routeEnding) : null
   const routeEstimate = planSteps && start ? estimateRoute(start, planSteps, simConfig) : null
   const routeBattery =
     planSteps && start && hud && routeEstimate && routeCheck?.status === 'done'
@@ -549,6 +587,7 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
     setMission(inAirRef.current ? 'free' : 'choose')
     setRouteStops([])
     setCompose({ state: 'idle' })
+    setRouteEnding('hover')
   }, [])
 
   const addStop = useCallback((stop: FlyToTarget) => {
@@ -621,7 +660,11 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
           legMinSafe = check.legMinSafeM
           path = check.path
           // Enough battery for the route and the flight home after it?
-          const steps = routeSteps(start, path, legMinSafe, altM)
+          if (routeEnding === 'land' && check.landOn) {
+            setPx4Error(`It would land on the roof of ${check.landOn.name ?? 'a building'} (${check.landOn.heightM} m): choose another last stop, or another ending.`)
+            return
+          }
+          const steps = routeSteps(start, path, legMinSafe, altM, routeEnding)
           const b = batteryFor(estimateRoute(start, steps, config), path, check, altM, s, config)
           if (!b.ok) {
             setPx4Error(
@@ -631,13 +674,13 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
           }
         }
       }
-      const steps = routeSteps(start, path, legMinSafe, altM)
+      const steps = routeSteps(start, path, legMinSafe, altM, routeEnding)
       setAutopilot(true)
       lastRoute.current = { start: { lat: s.lat, lon: s.lon }, path }
-      updateRun({ steps, i: -1, stops: path, altM, phase: 'climbing', kind: 'route' })
+      updateRun({ steps, i: -1, stops: path, altM, phase: 'climbing', kind: 'route', ending: routeEnding })
       runStepRef.current(0)
     },
-    [routeStops, routeSafety, updateRun],
+    [routeStops, routeSafety, updateRun, routeEnding],
   )
 
   /** Leave the autopilot: the drone holds where it is and the manual controls take over. */
@@ -710,7 +753,7 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
     setMission('free')
     setRouteStops([])
     setAutopilot(true)
-    updateRun({ steps, i: -1, stops: check.path, altM: RETURN_MIN_ALT_M, phase: 'climbing', kind: 'return' })
+    updateRun({ steps, i: -1, stops: check.path, altM: RETURN_MIN_ALT_M, phase: 'climbing', kind: 'return', ending: 'hover' })
     runStepRef.current(0)
   }, [routeSafety, px4Command, updateRun])
 
@@ -727,6 +770,9 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
     },
     [droneView, px4Command, updateRun],
   )
+  useEffect(() => {
+    returnHomeRef.current = () => void returnHome()
+  }, [returnHome])
   const collision = useCollisions(px4, onBuildingHit, !crashed)
 
   /** Back to the start: PX4 restarts with the drone at home, and the wreck is cleared. */
@@ -808,11 +854,6 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
         } else setCompose({ state: 'error', text, message: 'The drone is already home.', problems: [] })
         return
       }
-      const notYet = [
-        ...(route.hovers.length ? ['hovering'] : []),
-        ...(route.ending === 'land' ? ['landing at the end (press Land when it gets there)'] : []),
-        ...(route.ending === 'return' ? ['coming home at the end (press Return when it gets there)'] : []),
-      ]
       // Circles passing right beside a building too tall to cross under the ceiling bend
       // round it (see bendCircles) instead of the route being refused.
       let stops = route.stops
@@ -831,7 +872,8 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
       }
       setRouteStops(stops)
       if (route.altM !== null) setComposedAltM((prev) => ({ altM: route.altM!, id: (prev?.id ?? 0) + 1 }))
-      setCompose({ state: 'done', text, summary: plan.summary, notes: route.notes, notYet })
+      setRouteEnding(route.ending)
+      setCompose({ state: 'done', text, summary: plan.summary, notes: route.notes })
     },
     [px4, searchPlace, routeSafety, returnHome],
   )
@@ -864,12 +906,18 @@ export function useDrone({ pickLocation, searchPlace }: Options = {}) {
         onPlanRoute: () => setMission('route'),
         onBack: backToChoose,
         // The stops the pilot sees (circles as one stop; their turning points are hidden).
-        routeStops: routeStops.filter((st) => !st.via),
+        // A hover after a circle sits on its last (hidden) point: show it on the circle.
+        routeStops: stopGroups(routeStops).map((g) => {
+          const hoverS = g.reduce((t, st) => t + (st.hoverS ?? 0), 0)
+          return hoverS ? { ...g[0], hoverS } : g[0]
+        }),
         ai: px4.ai,
         compose,
         composedAltM,
         onComposeRoute: (text: string) => void composeRoute(text),
         onComposeClear: () => setCompose({ state: 'idle' }),
+        routeEnding,
+        onRouteEnding: setRouteEnding,
         onPickRouteStop: () => void pickRouteStop(),
         onRemoveStop: removeStop,
         onMoveStopUp: moveStopUp,
@@ -936,6 +984,16 @@ function batteryFor(
   return { ...checkBattery(s.battery, route, home, config), home }
 }
 
+/** An orbit counts as done this many degrees short of its laps (PX4 carries on round until the next command). */
+const ORBIT_DONE_EARLY_DEG = 5
+
+/** Compass bearing from `from` to `to`, degrees. */
+function bearingDeg(from: LatLon, to: LatLon): number {
+  const x = (to.lon - from.lon) * 111_320 * Math.cos((from.lat * Math.PI) / 180)
+  const y = (to.lat - from.lat) * 110_574
+  return (Math.atan2(x, y) * 180) / Math.PI
+}
+
 /** Re-send the path home to PX4 after the drone moves this far, metres. */
 const RETURN_PATH_EVERY_M = 25
 /** Flight modes in which PX4 may be flying the return path: it's left alone then. */
@@ -995,7 +1053,10 @@ async function checkRoute(
   const homePoint = s.home ?? { lat: s.lat, lon: s.lon }
   const { path, legs, detours, blocked } = await planLegs(safety, { lat: s.lat, lon: s.lon }, stops, homeAmslM, ceilingM)
   const home: FlyToTarget = { lat: homePoint.lat, lon: homePoint.lon, label: 'Home' }
-  const back = await planLegs(safety, stops[stops.length - 1], [home], homeAmslM, ceilingM)
+  const [back, landOn] = await Promise.all([
+    planLegs(safety, stops[stops.length - 1], [home], homeAmslM, ceilingM),
+    safety.buildingAt(stops[stops.length - 1]).catch(() => null),
+  ])
   const worst = blocked ?? legs.reduce((w, r) => (r.minSafeRelAltM > w.minSafeRelAltM ? r : w), legs[0])
   const last = legs[legs.length - 1]
   return {
@@ -1010,6 +1071,7 @@ async function checkRoute(
     homeLegMinSafeM: back.legs.map((r) => r.minSafeRelAltM),
     path,
     detours,
+    landOn,
   }
 }
 

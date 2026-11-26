@@ -31,6 +31,15 @@ const LAND_SLOW_ALT_M = 5
 
 export type RouteStart = { lat: number; lon: number; relAltM: number; inAir: boolean }
 
+/** After the last stop: stay hovering there, land there, or fly home (as the Return button does). */
+export type RouteEnding = 'hover' | 'land' | 'return'
+
+/**
+ * Circles (PX4's Orbit, asked for the cruise speed) go round at about this share of it:
+ * measured in the sim, 3.5 m/s asked for 5, 2.6 asked for 3.5.
+ */
+const ORBIT_SPEED_OF_CRUISE = 0.7
+
 export type RouteStep =
   /** Take off from the ground to this height. */
   | { kind: 'takeoff'; altM: number }
@@ -38,8 +47,26 @@ export type RouteStep =
   | { kind: 'vertical'; altM: number; lat: number; lon: number; atStart: boolean }
   /** Fly to stop `stop`, at the current height. */
   | { kind: 'fly'; stop: number; dest: FlyToTarget; altM: number }
-  /** Land where it is (the end of a return home). */
+  /** Land where it is (the end of a return home, or a route that ends by landing). */
   | { kind: 'land'; lat: number; lon: number }
+  /** Hover where it is for a while (at stop `stop`). */
+  | { kind: 'hover'; seconds: number; lat: number; lon: number; altM: number; stop: number }
+  /**
+   * Circle round a centre (PX4's Orbit), starting and ending at the entry stop, at a height
+   * clear of every leg of the circle. `points` is the circle as checked (for drawing);
+   * `stop` is its last point in the stops.
+   */
+  | {
+      kind: 'orbit'
+      lat: number
+      lon: number
+      radiusM: number
+      laps: number
+      clockwise: boolean
+      altM: number
+      points: FlyToTarget[]
+      stop: number
+    }
 
 /**
  * Crossing height for each leg. The first leg never descends from the current height
@@ -50,21 +77,57 @@ export function legCrossings(start: RouteStart, legMinSafeM: number[], altM: num
   return legMinSafeM.map((safe, i) => Math.max(altM, safe, i === 0 && start.inAir ? start.relAltM : 0))
 }
 
+/**
+ * The circle starting at stop `i` (its entry, with `orbit`): the index of its last point,
+ * or -1 if it can't be flown as an orbit (a detour point was added between its points).
+ */
+function orbitEnd(stops: FlyToTarget[], i: number): number {
+  if (!stops[i].orbit) return -1
+  let j = i + 1
+  while (j < stops.length && stops[j].circle) j++
+  // Anything else hidden right after (a detour's turning point) means the circle bent: fly the points.
+  if (j < stops.length && stops[j].via) return -1
+  return j - 1 > i ? j - 1 : -1
+}
+
 /** The steps the autopilot flies, in order. */
-export function routeSteps(start: RouteStart, stops: FlyToTarget[], legMinSafeM: number[], altM: number): RouteStep[] {
+export function routeSteps(
+  start: RouteStart,
+  stops: FlyToTarget[],
+  legMinSafeM: number[],
+  altM: number,
+  ending: RouteEnding = 'hover',
+): RouteStep[] {
   const cross = legCrossings(start, legMinSafeM, altM)
   const steps: RouteStep[] = []
   let height = start.inAir ? start.relAltM : 0
   let at = { lat: start.lat, lon: start.lon }
-  stops.forEach((dest, i) => {
-    if (i === 0 && !start.inAir) steps.push({ kind: 'takeoff', altM: cross[0] })
-    else if (Math.abs(cross[i] - height) > ROUTE_HEIGHT_TOLERANCE_M)
-      steps.push({ kind: 'vertical', altM: cross[i], lat: at.lat, lon: at.lon, atStart: i === 0 })
+  const climbTo = (h: number, i: number) => {
+    if (i === 0 && !start.inAir) steps.push({ kind: 'takeoff', altM: h })
+    else if (Math.abs(h - height) > ROUTE_HEIGHT_TOLERANCE_M) steps.push({ kind: 'vertical', altM: h, lat: at.lat, lon: at.lon, atStart: i === 0 })
+    height = h
+  }
+  for (let i = 0; i < stops.length; i++) {
+    const dest = stops[i]
+    climbTo(cross[i], i)
     steps.push({ kind: 'fly', stop: i, dest, altM: cross[i] })
-    height = cross[i]
     at = dest
-  })
-  if (stops.length && altM < height - ROUTE_HEIGHT_TOLERANCE_M)
+    if (dest.hoverS) steps.push({ kind: 'hover', seconds: dest.hoverS, lat: dest.lat, lon: dest.lon, altM: height, stop: i })
+    // A circle: one orbit at the height that clears all its legs, instead of point to point.
+    const end = orbitEnd(stops, i)
+    if (end > i && dest.orbit) {
+      const h = Math.max(...cross.slice(i + 1, end + 1))
+      climbTo(h, i + 1)
+      steps.push({ kind: 'orbit', ...dest.orbit, altM: h, points: stops.slice(i + 1, end + 1), stop: end })
+      at = stops[end]
+      const after = stops[end].hoverS
+      if (after) steps.push({ kind: 'hover', seconds: after, lat: at.lat, lon: at.lon, altM: height, stop: end })
+      i = end
+    }
+  }
+  if (!stops.length) return steps
+  if (ending === 'land') steps.push({ kind: 'land', lat: at.lat, lon: at.lon })
+  else if (ending === 'hover' && altM < height - ROUTE_HEIGHT_TOLERANCE_M)
     steps.push({ kind: 'vertical', altM, lat: at.lat, lon: at.lon, atStart: false })
   return steps
 }
@@ -154,6 +217,13 @@ export function estimateRoute(start: RouteStart, steps: RouteStep[], config: Sim
       distance += d
       t.leg(d)
       at = step.dest
+    } else if (step.kind === 'hover') {
+      t.add(step.seconds, true, 0, 0)
+    } else if (step.kind === 'orbit') {
+      const d = 2 * Math.PI * step.radiusM * step.laps
+      distance += d
+      const speed = config.cruiseMs * ORBIT_SPEED_OF_CRUISE
+      t.add(d / speed + ARRIVE_S, true, 0, speed)
     } else if (step.kind === 'land') {
       // Descent speed down to 5 m, then the landing speed (as PX4 lands).
       const slow = Math.min(height, LAND_SLOW_ALT_M)
@@ -238,12 +308,14 @@ export function formatDuration(s: number): string {
   return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${min % 60} min`
 }
 
-/** Where a step ends, for drawing the path (take-offs and climbs at the start sit over the drone). */
-function stepPoint(step: RouteStep): PreviewPoint {
-  if (step.kind === 'fly') return { lat: step.dest.lat, lon: step.dest.lon, relAltM: step.altM }
-  if (step.kind === 'land') return { lat: step.lat, lon: step.lon, relAltM: 0 }
-  if (step.kind === 'takeoff' || step.atStart) return { atDrone: true, relAltM: step.altM }
-  return { lat: step.lat, lon: step.lon, relAltM: step.altM }
+/** Where a step goes, for drawing the path (take-offs and climbs at the start sit over the drone). */
+function stepPoints(step: RouteStep): PreviewPoint[] {
+  if (step.kind === 'fly') return [{ lat: step.dest.lat, lon: step.dest.lon, relAltM: step.altM }]
+  if (step.kind === 'land') return [{ lat: step.lat, lon: step.lon, relAltM: 0 }]
+  if (step.kind === 'hover') return []
+  if (step.kind === 'orbit') return step.points.map((p) => ({ lat: p.lat, lon: p.lon, relAltM: step.altM }))
+  if (step.kind === 'takeoff' || step.atStart) return [{ atDrone: true, relAltM: step.altM }]
+  return [{ lat: step.lat, lon: step.lon, relAltM: step.altM }]
 }
 
 /** The stops the user chose, leaving out detour turning points: [path index, stop number (0-based)]. */
@@ -265,7 +337,7 @@ function stopLabel(stops: FlyToTarget[], i: number): string {
 export function planPreview(stops: FlyToTarget[], steps: RouteStep[]): RoutePreview {
   return {
     markers: stops.flatMap((s, i) => (s.via ? [] : [{ lat: s.lat, lon: s.lon, label: stopLabel(stops, i) }])),
-    path: steps.map(stepPoint),
+    path: steps.flatMap(stepPoints),
     fromDrone: true,
   }
 }
@@ -275,16 +347,16 @@ export function planPreview(stops: FlyToTarget[], steps: RouteStep[]): RoutePrev
  * blue fly-to target): its later stops and path. Null once there's nothing left to show.
  */
 export function remainingPreview(stops: FlyToTarget[], steps: RouteStep[], current: number): RoutePreview | null {
-  const j = steps.findIndex((s, k) => k >= current && s.kind === 'fly')
+  const j = steps.findIndex((s, k) => k >= current && (s.kind === 'fly' || s.kind === 'orbit'))
   if (j < 0) return null
-  const heading = (steps[j] as Extract<RouteStep, { kind: 'fly' }>).stop
-  const path = steps.slice(j).map(stepPoint)
+  const heading = (steps[j] as Extract<RouteStep, { kind: 'fly' | 'orbit' }>).stop
+  const path = steps.slice(j).flatMap(stepPoints)
   const markers = stops.flatMap((s, i) => (i > heading && !s.via ? [{ lat: s.lat, lon: s.lon, label: stopLabel(stops, i) }] : []))
   return markers.length || path.length > 1 ? { markers, path, fromDrone: false } : null
 }
 
 /** The stop a step belongs to: the one it flies to, or (climbing, descending) the next one, else the last. */
 export function stepStop(steps: RouteStep[], i: number, stopCount: number): number {
-  const next = steps.find((s, k) => k >= i && s.kind === 'fly')
-  return next && next.kind === 'fly' ? next.stop : stopCount - 1
+  const next = steps.find((s, k) => k >= i && (s.kind === 'fly' || s.kind === 'orbit' || s.kind === 'hover'))
+  return next && 'stop' in next ? next.stop : stopCount - 1
 }

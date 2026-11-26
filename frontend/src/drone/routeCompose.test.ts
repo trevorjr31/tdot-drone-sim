@@ -93,7 +93,10 @@ describe('compilePlan', () => {
     const [ex, ey] = xy(pts[0])
     const [lx, ly] = xy(pts[pts.length - 1])
     expect(Math.hypot(ex - lx, ey - ly)).toBeLessThan(0.01)
-    expect(pts.slice(1).every((p) => p.via)).toBe(true)
+    expect(pts.slice(1).every((p) => p.via && p.circle)).toBe(true)
+    // Flown as an orbit round the centre.
+    expect(pts[0].orbit).toMatchObject({ radiusM: 20, laps: 1, clockwise: true })
+    expect(xy(pts[0].orbit!)[1]).toBeCloseTo(100, 3)
     expect(route.ending).toBe('return')
   })
 
@@ -165,7 +168,7 @@ describe('compilePlan', () => {
       plan(step('height', { rel_alt_m: 50 }), step('fly_to', { place: 'Eaton Centre', place_kind: 'name' }), step('hover', { seconds: 30 })),
     )
     expect(route.altM).toBe(50)
-    expect(route.hovers).toEqual([{ stop: 0, seconds: 30 }])
+    expect(route.stops[0].hoverS).toBe(30)
   })
 
   it('centres the circle on the building, not the address point at its entrance', async () => {
@@ -329,6 +332,8 @@ describe('bendCircles', () => {
       const r = (await bendCircles(r0, async (p) => east(p)))!
       expect(r.bent).toBe(true)
       expect(r.stops.some(east)).toBe(false)
+      // Bent: flown point to point, not as an orbit.
+      expect(r.stops.some((p) => p.orbit)).toBe(false)
       // Still one labelled stop for the circle, closing back on itself.
       const real = r.stops.filter((p) => !p.via && p.label.startsWith('Circle'))
       expect(real).toHaveLength(1)

@@ -14,6 +14,7 @@ const check: Extract<RouteCheckInfo, { status: 'done' }> = {
   homeLegMinSafeM: [99],
   path: [{ lat: 43.65, lon: -79.38, label: 'Destination' }],
   detours: [],
+  landOn: null,
 }
 
 describe('routeProblem', () => {

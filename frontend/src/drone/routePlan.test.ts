@@ -135,3 +135,51 @@ describe('return home', () => {
     ])
   })
 })
+
+describe('route endings, hovers and circles', () => {
+  // A circle: entry stop `e` with orbit, then its points (the last is back at the entry).
+  const e = { lat: 43.66, lon: -79.37, label: 'Circle X', orbit: { lat: 43.6605, lon: -79.37, radiusM: 55, laps: 2, clockwise: true } }
+  const p1 = { lat: 43.661, lon: -79.37, label: 'Circling X', via: true, circle: true }
+  const p2 = { lat: 43.6605, lon: -79.3693, label: 'Circling X', via: true, circle: true }
+  const p3 = { ...e, orbit: undefined, label: 'Circling X', via: true, circle: true }
+
+  it('lands at the last stop instead of descending, when the route ends by landing', () => {
+    expect(routeSteps(ground, [a], [80], 40, 'land').slice(-1)).toEqual([{ kind: 'land', lat: a.lat, lon: a.lon }])
+  })
+
+  it("doesn't descend at the end when it comes home after (Return climbs anyway)", () => {
+    expect(routeSteps(ground, [a], [80], 40, 'return').map((s) => s.kind)).toEqual(['takeoff', 'fly'])
+  })
+
+  it('hovers at a stop for as long as asked, and counts it in the time and battery', () => {
+    const steps = routeSteps(ground, [{ ...a, hoverS: 30 }, b], [0, 0], 30)
+    expect(steps.map((s) => s.kind)).toEqual(['takeoff', 'fly', 'hover', 'fly'])
+    expect(steps[2]).toMatchObject({ seconds: 30, lat: a.lat, stop: 0 })
+    const without = estimateRoute(ground, routeSteps(ground, [a, b], [0, 0], 30))
+    const withHover = estimateRoute(ground, steps)
+    expect(withHover.timeS - without.timeS).toBeCloseTo(30, 5)
+    expect(withHover.battery - without.battery).toBeCloseTo(30 / (DEFAULT_SIM_CONFIG.batteryMin * 60), 5)
+  })
+
+  it('flies a circle as one orbit, at the height that clears all its legs', () => {
+    const steps = routeSteps(ground, [e, p1, p2, p3, b], [30, 30, 70, 40, 30], 30)
+    expect(steps.map((s) => s.kind)).toEqual(['takeoff', 'fly', 'vertical', 'orbit', 'vertical', 'fly'])
+    expect(steps[2]).toMatchObject({ altM: 70, lat: e.lat })
+    expect(steps[3]).toMatchObject({ kind: 'orbit', lat: e.orbit.lat, radiusM: 55, laps: 2, clockwise: true, altM: 70, stop: 3 })
+    // Time: two laps of the circle, not the points' chords.
+    const est = estimateRoute(ground, steps)
+    expect(est.distanceM).toBeGreaterThan(2 * 2 * Math.PI * 55)
+  })
+
+  it('flies the points instead when a detour was added between them (the circle bent round a tower)', () => {
+    const detour = { lat: 43.6612, lon: -79.3695, label: 'Detour to Circling X', via: true }
+    const steps = routeSteps(ground, [e, p1, detour, p2, p3], [30, 30, 30, 30, 30], 30)
+    expect(steps.some((s) => s.kind === 'orbit')).toBe(false)
+    expect(steps.filter((s) => s.kind === 'fly')).toHaveLength(5)
+  })
+
+  it('hovers after a circle when asked', () => {
+    const steps = routeSteps(ground, [e, p1, p2, { ...p3, hoverS: 10 }], [30, 30, 30, 30], 30)
+    expect(steps.map((s) => s.kind)).toEqual(['takeoff', 'fly', 'orbit', 'hover'])
+  })
+})

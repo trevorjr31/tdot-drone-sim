@@ -55,8 +55,17 @@ export type FlyToTarget = {
   label: string
   /** The place is on a building (picked on the map): its height, metres. */
   building?: { heightM: number }
-  /** A turning point on a detour round tall buildings, not a stop the user chose. */
+  /** A turning point on a detour round tall buildings, or a point on a circle: not a stop the user chose. */
   via?: boolean
+  /** Hover here this long on arrival, seconds. */
+  hoverS?: number
+  /** A point on a circle (one of the hidden turning points after its entry stop). */
+  circle?: boolean
+  /**
+   * A circle starts here (the entry stop): its points follow as `circle` stops. Flown as
+   * PX4's Orbit round the centre when nothing had to be added between them (a detour).
+   */
+  orbit?: { lat: number; lon: number; radiusM: number; laps: number; clockwise: boolean }
 }
 
 /** A point on a planned route's path, metres above home; `atDrone` points sit over the drone. */

@@ -167,12 +167,15 @@ move a distance in a direction, circle, height, hover, land, return home. Claude
 the map or gives coordinates; the app looks up the places (the geocoder, or the
 OpenStreetMap place list from `npm run data`), works out the moves and circles, and runs
 the usual route check. If the request is unclear, Claude asks a question instead of guessing (answer it in the box).
-The result replaces the planned stops; a circle shows as one stop and is flown as hidden
-turning points, centred on the building (or the place's OpenStreetMap outline, for a big
-place like a mall) and clear of it by the route corridor. A circle passing right beside a
-building too tall to fly over bends round it. A height ("at 50 m") sets the planner's height.
-Hovering, and landing or coming home at the end, aren't flown automatically yet: the panel
-says so.
+The result replaces the planned stops and sets **At the end** (hover, land, come home). A
+circle shows as one stop, centred on the building (or the place's OpenStreetMap outline, for
+a big place like a mall) and clear of it by the route corridor. It's checked as hidden
+turning points and flown as PX4's **Orbit** (the bridge's `orbit` command), at the height
+that clears every leg of it, until the app has counted the laps; a circle passing right
+beside a building too tall to fly over bends round it and is flown point to point instead.
+A hover waits at its stop for the time asked (it shows as a "Hovers" tag), and a height
+("at 50 m") sets the planner's height. In the sim, "go west 150 m, circle there with a 25 m
+radius, hover for 10 seconds, then come home" flew as asked and landed 1 m from home.
 See [sim/bridge/compose.py](sim/bridge/compose.py) (the request and its JSON schema) and
 [frontend/src/drone/routeCompose.ts](frontend/src/drone/routeCompose.ts) (steps → route).
 
@@ -190,6 +193,9 @@ The bridge's unit tests for it use a fake client, no key needed:
 ```bash
 docker run --rm --entrypoint python tdot/px4-bridge:dev -m unittest compose_test -v
 ```
+
+`sim/tools/orbit_check.py` is a manual check of the orbit command (direction and radius):
+take off, orbit 30 m round a point clockwise for 40 s, land. Run it like the tests below.
 
 ### Smoke tests
 
@@ -232,7 +238,7 @@ WebSocket protocol (see [sim/bridge/bridge.py](sim/bridge/bridge.py)):
 | bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…},"returnAltM":99,"returnPathPoints":4,"config":{…},"ai":true}` on connect and on change (`config`: the sim settings; `ai`: routes in words are available) |
 | bridge → app | `{"type":"state","state":{…}}` at 20 Hz, same fields as the app's `DroneState` |
 | app → bridge | `{"type":"command","id":"…","action":"composeRoute","text":"…","context":{"inAir":false,"relAltM":0,"plannerAltM":30,"ceilingM":120}}`: a route in words; the ack carries `"plan":{"summary","questions","steps"}`. Works without PX4; refused when the status's `"ai"` is false (no API key) |
-| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `crash`, `reset`, `returnAlt` with `relAltM`: Return's height, and `returnPath` with `points` (drone → home, `lat`/`lon`/`relAltM`): the path PX4's Return follows, both leave keyboard flying alone; `config` with some sim settings: checked, saved and applied, works without PX4) |
+| app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `orbit` with `lat`/`lon`/`relAltM`/`radiusM`/`clockwise`/`speedMs`: circle round a point (PX4's Orbit mode, which MAVSDK reports as "Position"), `crash`, `reset`, `returnAlt` with `relAltM`: Return's height, and `returnPath` with `points` (drone → home, `lat`/`lon`/`relAltM`): the path PX4's Return follows, both leave keyboard flying alone; `config` with some sim settings: checked, saved and applied, works without PX4) |
 | bridge → app | `{"type":"ack","id":"…","ok":false,"error":"…"}` with PX4's reason if refused |
 | app → bridge | `{"type":"velocity","forwardMs":5,"rightMs":0,"downMs":0,"yawRateDegS":0}` ~10 Hz while keys are held (keyboard flying; body frame, down positive) |
 | bridge → app | `{"type":"notice","level":"error","message":"…"}` e.g. "Take off first" |

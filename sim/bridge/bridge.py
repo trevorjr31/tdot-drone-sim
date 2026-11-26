@@ -10,11 +10,12 @@ MAVSDK and exposes a WebSocket the React app talks to:
                    {"type": "ack",    "id": str, "ok": bool, "error": str|null, "plan"?: {...}}  (plan: composeRoute)
                    {"type": "notice", "level": "error", "message": str}   (e.g. offboard refused)
   client → server  {"type": "command", "id": str,
-                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset"|"returnAlt"|"returnPath"|"config"|"composeRoute",
+                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset"|"returnAlt"|"returnPath"|"config"|"composeRoute"|"orbit",
                     "altitudeM"?: number, "lat"?: number, "lon"?: number, "relAltM"?: number,
                     "config"?: {...some SimConfig fields},
                     "points"?: [{"lat", "lon", "relAltM"}, ...],  (returnPath: drone → home)
-                    "text"?: str, "context"?: {...}}  (composeRoute: the pilot's words, see compose.py)
+                    "text"?: str, "context"?: {...},  (composeRoute: the pilot's words, see compose.py)
+                    "radiusM"?: number, "clockwise"?: bool, "speedMs"?: number}  (orbit: round lat/lon at relAltM)
                    {"type": "velocity", "forwardMs": n, "rightMs": n, "downMs": n, "yawRateDegS": n}
                      Keyboard flying: body-frame velocity, sent ~10 Hz while keys are held.
                      The bridge switches PX4 to offboard mode and streams the setpoint. If the
@@ -86,6 +87,7 @@ import os
 import time
 
 from mavsdk_grpc import System
+from mavsdk_grpc.action import OrbitYawBehavior
 from mavsdk_grpc.geofence import FenceType, GeofenceData, Point, Polygon
 from mavsdk_grpc.offboard import VelocityBodyYawspeed
 from mavsdk_grpc.mission import MissionItem, MissionPlan
@@ -104,6 +106,9 @@ DEFAULT_TAKEOFF_ALT_M = 30.0
 TELEMETRY_TIMEOUT_S = 3.0
 # Keyboard (offboard velocity) limits and timeouts.
 MAX_SPEED_MS = 12.0
+# PX4's Orbit mode: radius limits (MC_ORBIT_RAD_MAX defaults to 1000 m).
+ORBIT_MIN_RADIUS_M = 5.0
+ORBIT_MAX_RADIUS_M = 1000.0
 MAX_CLIMB_MS = 3.0
 MAX_YAW_RATE_DEG_S = 90.0
 OFFBOARD_RATE_HZ = 20.0  # PX4 needs setpoints faster than 2 Hz or it fails safe
@@ -700,6 +705,21 @@ class Bridge:
             rel = self.s["relAltM"] if rel is None else max(5.0, min(self.config["ceilingM"], float(rel)))
             # NaN yaw: let PX4 face the direction of travel.
             await a.goto_location(lat, lon, home["altAmslM"] + rel, math.nan)
+        elif action == "orbit":
+            # Circle round a point (PX4's Orbit mode), facing the centre, until another command.
+            # MAVLink's sign convention: a positive radius goes clockwise seen from above.
+            if not self.s["inAir"]:
+                raise ValueError("Take off first")
+            lat, lon = float(msg["lat"]), float(msg["lon"])
+            radius = float(msg["radiusM"])
+            if not ORBIT_MIN_RADIUS_M <= radius <= ORBIT_MAX_RADIUS_M:
+                raise ValueError(f"Orbit radius must be between {ORBIT_MIN_RADIUS_M:.0f} and {ORBIT_MAX_RADIUS_M:.0f} m")
+            speed = max(1.0, min(MAX_SPEED_MS, float(msg.get("speedMs") or self.config["cruiseMs"])))
+            home = self.s["home"] or {"altAmslM": self.s["altAmslM"] - self.s["relAltM"]}
+            rel = msg.get("relAltM")
+            rel = self.s["relAltM"] if rel is None else max(5.0, min(self.config["ceilingM"], float(rel)))
+            signed = radius if msg.get("clockwise", True) else -radius
+            await a.do_orbit(signed, speed, OrbitYawBehavior.HOLD_FRONT_TO_CIRCLE_CENTER, lat, lon, home["altAmslM"] + rel)
         else:
             raise ValueError(f"Unknown action: {action}")
 

@@ -18,7 +18,7 @@ export type BridgeStatus =
   | 'px4-offline'
   | 'connected'
 
-export type Px4Command = 'takeoff' | 'land' | 'rtl' | 'hold' | 'arm' | 'disarm' | 'goto' | 'crash' | 'reset' | 'returnAlt' | 'returnPath' | 'config'
+export type Px4Command = 'takeoff' | 'land' | 'rtl' | 'hold' | 'arm' | 'disarm' | 'goto' | 'crash' | 'reset' | 'returnAlt' | 'returnPath' | 'config' | 'orbit'
 
 export type Px4CommandParams = {
   /** takeoff: height above launch. */
@@ -29,6 +29,10 @@ export type Px4CommandParams = {
   relAltM?: number
   /** returnPath: the path home for PX4's own Return, drone → home ([] clears it). */
   points?: { lat: number; lon: number; relAltM: number }[]
+  /** orbit: circle round lat/lon at relAltM, this radius, clockwise or not (seen from above), at this speed. */
+  radiusM?: number
+  clockwise?: boolean
+  speedMs?: number
   /** config: the sim settings to change (the bridge saves and applies them). */
   config?: Partial<SimConfig>
 }
