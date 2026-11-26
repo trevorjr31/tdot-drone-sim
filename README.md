@@ -1,6 +1,6 @@
 # TDot Drone Sim
 
-A drone simulator set in a 3D City of Toronto.
+A drone simulator over a photorealistic 3D Toronto: a React and CesiumJS app showing Google's 3D tiles, flying a PX4 autopilot (SITL, in Docker) through a Python MAVSDK bridge. Fly it with the keyboard, or plan multi-stop routes that go round buildings too tall to cross, with distance, time and battery estimates, using City of Toronto building data. Routes can also be described in words ("fly to the nearest hospital, circle it, then come home"): Claude turns the text into steps, and the app flies them. A geofence, a realistic battery and a building-aware Return home keep it safe.
 
 ![Plan a route over downtown Toronto: recent places in the search, the drone taking off](docs/screenshots/plan-a-route.png)
 
