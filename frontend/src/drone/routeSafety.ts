@@ -167,6 +167,31 @@ export class RouteSafety {
   }
 
   /**
+   * The building at a point, or the nearest within `withinM` (a geocoded address is often at
+   * the entrance, just outside the footprint): its centre and how far it reaches from there,
+   * metres. For sizing a circle round it. Null if there's none.
+   */
+  async buildingAround(at: LatLon, withinM = 30): Promise<{ centre: LatLon; radiusM: number } | null> {
+    const kx = mPerDegLon(at.lat)
+    const sets = await Promise.all(tilesOnRoute(this.index, at, at, withinM).map((k) => this.tile(k)))
+    let best: Building | null = null
+    let bestD = Infinity
+    for (const b of sets.flat()) {
+      const d = footprintContains(b, at.lon, at.lat)
+        ? -b.roofM // inside: the tallest wins
+        : Math.min(...b.outer.map(([lon, lat]) => Math.hypot((lon - at.lon) * kx, (lat - at.lat) * M_PER_DEG_LAT)))
+      if ((d < 0 || d <= withinM) && d < bestD) {
+        best = b
+        bestD = d
+      }
+    }
+    if (!best) return null
+    const centre = { lon: (best.bbox[0] + best.bbox[2]) / 2, lat: (best.bbox[1] + best.bbox[3]) / 2 }
+    const radiusM = Math.max(...best.outer.map(([lon, lat]) => Math.hypot((lon - centre.lon) * kx, (lat - centre.lat) * M_PER_DEG_LAT)))
+    return { centre, radiusM: Math.round(radiusM) }
+  }
+
+  /**
    * The shortest way round the buildings that are too tall to cross at `maxCrossM` above
    * home (their roof plus the clearance is higher), keeping the route corridor from them:
    * turning points between `from` and `to`, [] if the straight line is fine, or null if

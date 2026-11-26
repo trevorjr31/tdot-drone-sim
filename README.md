@@ -157,6 +157,40 @@ sim, a short route came within a few percent: it arrived with 67% (62% predicted
 flight home used 34% (33% predicted). To try the limits, set a short battery under
 Settings → Simulation.
 
+### Routes in words (Claude)
+
+**Plan a route** has a **Describe your route** box (shown when the bridge has an API key)
+for routes in words, like "go to the eaton centre, circle around it, go two blocks north and
+then land" or "fly to the nearest hospital". The app sends the text to the bridge, which asks Claude (`claude-opus-5-5`, low effort, structured
+output) to turn it into a list of steps: fly to a place (by name, or the nearest of a type),
+move a distance in a direction, circle, height, hover, land, return home. Claude never sees
+the map or gives coordinates; the app looks up the places (the geocoder, or the
+OpenStreetMap place list from `npm run data`), works out the moves and circles, and runs
+the usual route check. If the request is unclear, Claude asks a question instead of guessing (answer it in the box).
+The result replaces the planned stops; a circle shows as one stop and is flown as hidden
+turning points, centred on the building (or the place's OpenStreetMap outline, for a big
+place like a mall) and clear of it by the route corridor. A circle passing right beside a
+building too tall to fly over bends round it. A height ("at 50 m") sets the planner's height.
+Hovering, and landing or coming home at the end, aren't flown automatically yet: the panel
+says so.
+See [sim/bridge/compose.py](sim/bridge/compose.py) (the request and its JSON schema) and
+[frontend/src/drone/routeCompose.ts](frontend/src/drone/routeCompose.ts) (steps → route).
+
+It needs an Anthropic API key, kept in the bridge (never in the browser). Without one the
+feature is off and everything else works as before:
+
+```bash
+export ANTHROPIC_API_KEY=…      # or put ANTHROPIC_API_KEY=… in a .env file here (git-ignored)
+docker compose up -d --force-recreate bridge px4
+```
+
+Each request costs roughly 1–3 cents (Opus 5.5 at $4 / $20 per million tokens in / out: a ~1.5k-token prompt, and a short answer plus its thinking).
+The bridge's unit tests for it use a fake client, no key needed:
+
+```bash
+docker run --rm --entrypoint python tdot/px4-bridge:dev -m unittest compose_test -v
+```
+
 ### Smoke tests
 
 Both check home is in Toronto, take off to 20 m and land. `flight_test.py` talks to PX4
@@ -165,6 +199,7 @@ browser does: it checks the geofence is loaded and the 20 Hz state rate, flies f
 with keyboard-style velocity messages, checks the hover and hand-back to Hold, flies to a
 point 60 m north, sets a return height and checks Return climbs to it before heading home,
 checks bad sim settings are refused and a good one is saved and reported,
+asks for a route in words (refused without an API key; with one, checks Claude plans it),
 climbs into the 120 m ceiling and checks PX4 switches to Return, then crashes (motors cut:
 it must fall and disarm) and resets (back at home, geofence re-uploaded, return height back
 to the safe default):
@@ -194,8 +229,9 @@ WebSocket protocol (see [sim/bridge/bridge.py](sim/bridge/bridge.py)):
 
 | Direction | Message |
 |---|---|
-| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…},"returnAltM":99,"returnPathPoints":4,"config":{…}}` on connect and on change (`config`: the sim settings) |
+| bridge → app | `{"type":"status","px4Connected":true,"px4Version":"1.16.2","geofence":{…},"returnAltM":99,"returnPathPoints":4,"config":{…},"ai":true}` on connect and on change (`config`: the sim settings; `ai`: routes in words are available) |
 | bridge → app | `{"type":"state","state":{…}}` at 20 Hz, same fields as the app's `DroneState` |
+| app → bridge | `{"type":"command","id":"…","action":"composeRoute","text":"…","context":{"inAir":false,"relAltM":0,"plannerAltM":30,"ceilingM":120}}`: a route in words; the ack carries `"plan":{"summary","questions","steps"}`. Works without PX4; refused when the status's `"ai"` is false (no API key) |
 | app → bridge | `{"type":"command","id":"…","action":"takeoff","altitudeM":30}` (`takeoff`, `land`, `rtl`, `hold`, `arm`, `disarm`, `goto` with `lat`/`lon`/optional `relAltM`, `crash`, `reset`, `returnAlt` with `relAltM`: Return's height, and `returnPath` with `points` (drone → home, `lat`/`lon`/`relAltM`): the path PX4's Return follows, both leave keyboard flying alone; `config` with some sim settings: checked, saved and applied, works without PX4) |
 | bridge → app | `{"type":"ack","id":"…","ok":false,"error":"…"}` with PX4's reason if refused |
 | app → bridge | `{"type":"velocity","forwardMs":5,"rightMs":0,"downMs":0,"yawRateDegS":0}` ~10 Hz while keys are held (keyboard flying; body frame, down positive) |

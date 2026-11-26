@@ -1163,3 +1163,63 @@ body,
   color: var(--panel-muted);
   font-size: 11px;
 }
+
+/* Describe your route (Claude): text box, its questions, and the route it made. */
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.compose__text,
+.compose__reply input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--panel-text);
+  font: 12px/1.4 system-ui, sans-serif;
+}
+.compose__text {
+  resize: vertical;
+  min-height: 44px;
+}
+.compose__text:disabled {
+  opacity: 0.6;
+}
+.compose__questions,
+.compose__done {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.compose__questions p,
+.compose__done p {
+  margin: 0 0 4px;
+}
+.compose__questions {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 193, 7, 0.12);
+  border: 1px solid rgba(255, 193, 7, 0.4);
+}
+.compose__reply {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.compose__summary {
+  color: var(--panel-text);
+}
+.compose__note {
+  color: var(--panel-muted);
+}
+.compose__note.is-warn {
+  color: #ffd166;
+}
+.compose__problems {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}

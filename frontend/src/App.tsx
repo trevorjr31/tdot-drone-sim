@@ -28,7 +28,7 @@ function App() {
     }
   }, [])
 
-  const drone = useDrone({ pickLocation: mapApi?.pickLocation })
+  const drone = useDrone({ pickLocation: mapApi?.pickLocation, searchPlace: mapApi?.searchGoogle })
 
   // The search box lives in the drone card's Plan a route step: a chosen place is marked
   // on the map and becomes the route's destination.

@@ -7,6 +7,7 @@ import { formatDistance, formatDuration, ROUTE_MAX_STOPS, type RouteEstimate } f
 import {
   crossingAltM,
   routeProblem,
+  type ComposeStatus,
   type Mission,
   type ReturnPlan,
   type RouteBattery,
@@ -39,6 +40,13 @@ type Props = {
     onBack: () => void
     /** The route being planned: its stops, in order (the last is the destination). */
     routeStops: FlyToTarget[]
+    /** The bridge can plan routes described in words (Claude): show the box. */
+    ai: boolean
+    compose: ComposeStatus
+    /** A height the described route asked for (the planner switches to it; `id` changes each time). */
+    composedAltM: { altM: number; id: number } | null
+    onComposeRoute: (text: string) => void
+    onComposeClear: () => void
     /** Add a stop by clicking the map. */
     onPickRouteStop: () => void
     onRemoveStop: (i: number) => void
@@ -202,6 +210,12 @@ function RoutePlanner(
   const [altM, setAltM] = useState(() => Math.max(5, Math.min(120, Math.round(p.initialAltM))))
   const { onPlanAltM } = p
   useEffect(() => onPlanAltM(altM), [altM, onPlanAltM])
+  // A described route asked for a height ("at 50 m"): use it.
+  const [composedAltId, setComposedAltId] = useState(p.composedAltM?.id ?? 0)
+  if (p.composedAltM && p.composedAltM.id !== composedAltId) {
+    setComposedAltId(p.composedAltM.id)
+    setAltM(Math.round(p.composedAltM.altM))
+  }
   return (
     <>
       <div className="drone-panel__label">
@@ -210,6 +224,8 @@ function RoutePlanner(
           ← Back
         </button>
       </div>
+
+      {p.ai && <ComposeBox status={p.compose} onCompose={p.onComposeRoute} onClear={p.onComposeClear} />}
 
       <div className="drone-panel__step">{p.routeStops.length > 1 ? 'Stops' : 'Destination'}</div>
       {p.routeStops.length > 0 && (
@@ -285,6 +301,107 @@ function RoutePlanner(
         </>
       )}
     </>
+  )
+}
+
+const COMPOSE_EXAMPLES = ['go north 100 m, circle 20 m round, then come home', 'fly to the nearest hospital and circle it']
+
+/**
+ * Describe your route: the pilot's words go to Claude (through the bridge), which turns
+ * them into steps; the planner shows the stops it made, or Claude's questions, or why it
+ * couldn't. Replaces the stops already planned.
+ */
+function ComposeBox({ status, onCompose, onClear }: { status: ComposeStatus; onCompose: (text: string) => void; onClear: () => void }) {
+  const [text, setText] = useState(status.state === 'idle' ? '' : status.text)
+  const [answer, setAnswer] = useState('')
+  const asking = status.state === 'asking'
+  const send = () => text.trim() && !asking && onCompose(text.trim())
+  const reply = () => {
+    if (status.state !== 'questions' || !answer.trim()) return
+    // Stateless: the original words, Claude's questions and the answer go together as a new request.
+    const full = `${status.text}\n(Asked: ${status.questions.join(' ')} Answer: ${answer.trim()})`
+    setText(full)
+    setAnswer('')
+    onCompose(full)
+  }
+  return (
+    <div className="compose">
+      <div className="drone-panel__step">Describe your route</div>
+      <textarea
+        className="compose__text"
+        rows={2}
+        maxLength={600}
+        value={text}
+        placeholder={`e.g. “${COMPOSE_EXAMPLES[0]}”`}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            send()
+          }
+        }}
+        disabled={asking}
+        aria-label="Describe your route in words"
+      />
+      <div className="drone-panel__buttons">
+        <button type="button" className="btn" onClick={send} disabled={asking || !text.trim()}>
+          {asking ? 'Planning…' : 'Plan it'}
+        </button>
+        {status.state !== 'idle' && !asking && (
+          <button type="button" className="btn btn--small" onClick={onClear}>
+            Clear
+          </button>
+        )}
+      </div>
+
+      {status.state === 'questions' && (
+        <div className="compose__questions" role="status">
+          {status.questions.map((q) => (
+            <p key={q}>{q}</p>
+          ))}
+          <div className="compose__reply">
+            <input
+              type="text"
+              value={answer}
+              placeholder="Your answer"
+              onChange={(e) => setAnswer(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && reply()}
+              aria-label="Answer Claude's question"
+            />
+            <button type="button" className="btn btn--small" onClick={reply} disabled={!answer.trim()}>
+              Send
+            </button>
+          </div>
+        </div>
+      )}
+      {status.state === 'error' && (
+        <div className="drone-panel__check is-bad" role="alert">
+          <span>
+            {status.message}
+            {status.problems.length > 0 && (
+              <ul className="compose__problems">
+                {status.problems.map((pr) => (
+                  <li key={pr}>{pr}</li>
+                ))}
+              </ul>
+            )}
+          </span>
+        </div>
+      )}
+      {status.state === 'done' && (
+        <div className="compose__done" role="status">
+          {status.summary && <p className="compose__summary">{status.summary}</p>}
+          {status.notes.map((n) => (
+            <p key={n} className="compose__note">
+              {n}
+            </p>
+          ))}
+          {status.notYet.length > 0 && (
+            <p className="compose__note is-warn">Not flown automatically yet: {status.notYet.join('; ')}.</p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 

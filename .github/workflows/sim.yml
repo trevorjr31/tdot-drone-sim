@@ -56,6 +56,9 @@ jobs:
           cache-from: type=gha,scope=px4-bridge
           cache-to: type=gha,scope=px4-bridge,mode=max,ignore-error=true
 
+      - name: Bridge unit tests (routes in words, fake Claude client)
+        run: docker run --rm --entrypoint python tdot/px4-bridge:dev -m unittest compose_test -v
+
       # The bridge uploads the City of Toronto boundary to PX4 as a geofence; generate just that file.
       - uses: actions/setup-node@v7
         with:

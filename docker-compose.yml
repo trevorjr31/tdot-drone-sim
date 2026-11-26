@@ -54,6 +54,9 @@ services:
       CONFIG_FILE: /config/sim-config.json
       WS_PORT: "8765"
       STATE_RATE_HZ: "20"
+      # Routes described in words (Claude). Off unless set: export ANTHROPIC_API_KEY before
+      # `docker compose up`, or put it in a .env file next to this one (git-ignored).
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     restart: unless-stopped
 
 volumes:

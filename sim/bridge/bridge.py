@@ -5,15 +5,16 @@ Browsers can't speak MAVLink over UDP, so this service connects to PX4 with
 MAVSDK and exposes a WebSocket the React app talks to:
 
   server → client  {"type": "status", "px4Connected": bool, "px4Version": str|null, "geofence": {...},
-                    "returnAltM": number|null, "config": {...SimConfig}}
+                    "returnAltM": number|null, "config": {...SimConfig}, "ai": bool}
                    {"type": "state",  "state": {...DroneState...}}        (RATE_HZ)
-                   {"type": "ack",    "id": str, "ok": bool, "error": str|null}
+                   {"type": "ack",    "id": str, "ok": bool, "error": str|null, "plan"?: {...}}  (plan: composeRoute)
                    {"type": "notice", "level": "error", "message": str}   (e.g. offboard refused)
   client → server  {"type": "command", "id": str,
-                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset"|"returnAlt"|"returnPath"|"config",
+                    "action": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm"|"goto"|"crash"|"reset"|"returnAlt"|"returnPath"|"config"|"composeRoute",
                     "altitudeM"?: number, "lat"?: number, "lon"?: number, "relAltM"?: number,
                     "config"?: {...some SimConfig fields},
-                    "points"?: [{"lat", "lon", "relAltM"}, ...]}  (returnPath: drone → home)
+                    "points"?: [{"lat", "lon", "relAltM"}, ...],  (returnPath: drone → home)
+                    "text"?: str, "context"?: {...}}  (composeRoute: the pilot's words, see compose.py)
                    {"type": "velocity", "forwardMs": n, "rightMs": n, "downMs": n, "yawRateDegS": n}
                      Keyboard flying: body-frame velocity, sent ~10 Hz while keys are held.
                      The bridge switches PX4 to offboard mode and streams the setpoint. If the
@@ -64,6 +65,10 @@ the MAVLink shell (`param set-default`), which takes effect straight away and is
 saved. On connect it clears any saved values for these parameters once (`param reset`),
 so the defaults apply, and it sets them all again on every connect anyway.
 
+Routes in words: "composeRoute" asks Claude to turn the pilot's text into a step list
+(compose.py); the app looks up the places and builds the route. It works without PX4,
+and only when the bridge has an ANTHROPIC_API_KEY (the status's "ai" says whether).
+
 Battery: PX4's simulated battery drains at a set rate while armed (SIM_BAT_DRAIN, the
 seconds from full to empty) and refills on disarm. By default it stops at 50%, so the
 bridge lets it run down to 0% and sets PX4's low-battery responses: a warning at 25%,
@@ -87,6 +92,8 @@ from mavsdk_grpc.mission import MissionItem, MissionPlan
 from mavsdk_grpc.shell import Device
 from websockets.asyncio.server import ServerConnection, broadcast, serve
 from websockets.exceptions import ConnectionClosed
+
+import compose
 
 MAVLINK_URL = os.environ.get("MAVLINK_URL", "udpin://0.0.0.0:14540")
 WS_HOST = os.environ.get("WS_HOST", "0.0.0.0")
@@ -290,6 +297,8 @@ class Bridge:
         self.offboard_blocked = False
         self.resetting = False
         self.config = load_config()
+        # Claude, for routes described in words (None without an API key: the feature is off).
+        self.ai = compose.make_client()
         self.geofence = {"source": None, "points": 0, "ceilingM": self.config["ceilingM"], "uploaded": False, "error": None}
         # Height PX4 returns home at, as last set (None until set on connect).
         self.return_alt: float | None = None
@@ -808,6 +817,7 @@ class Bridge:
                 "returnPathPoints": self.return_path_points,
                 "config": self.config,
                 "resetting": self.resetting,
+                "ai": self.ai is not None,
             }
         )
 
@@ -847,6 +857,15 @@ class Bridge:
                 log.info("Sim config changed: %s", ", ".join(sorted(msg["config"])))
             except Exception as e:  # noqa: BLE001
                 reply.update(ok=False, error=str(e))
+        elif action == "composeRoute":
+            # Planning, not flying: works without PX4.
+            try:
+                reply["plan"] = await compose.compose_route(self.ai, msg.get("text"), msg.get("context"))
+            except compose.ComposeError as e:
+                reply.update(ok=False, error=str(e))
+            except Exception as e:  # noqa: BLE001
+                log.exception("composeRoute failed")
+                reply.update(ok=False, error=f"Couldn't plan that: {e}")
         elif not self.px4_connected:
             reply.update(ok=False, error="PX4 is not connected")
         else:

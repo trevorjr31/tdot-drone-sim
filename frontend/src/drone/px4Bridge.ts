@@ -1,4 +1,5 @@
 import type { VelocityCommand } from './keyboardFlight'
+import { parseComposePlan, type ComposePlan } from './routeCompose'
 import { parseSimConfig, type SimConfig } from './simConfig'
 import type { DroneSource, DroneState } from './types'
 
@@ -49,13 +50,20 @@ type ServerMessage =
       returnAltM?: number | null
       returnPathPoints?: number
       config?: unknown
+      /** The bridge can ask Claude to plan routes described in words (it has an API key). */
+      ai?: boolean
     }
   | { type: 'state'; state: DroneState }
-  | { type: 'ack'; id: string; ok: boolean; error: string | null }
+  | { type: 'ack'; id: string; ok: boolean; error: string | null; plan?: unknown }
   | { type: 'notice'; level: string; message: string }
 
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 5000]
 const COMMAND_TIMEOUT_MS = 30_000
+/** Claude usually answers in 5–20 s; the bridge gives up after a minute (plus one retry). */
+const COMPOSE_TIMEOUT_MS = 150_000
+
+/** What the app tells Claude about the drone along with the pilot's words. */
+export type ComposeContext = { inAir: boolean; relAltM: number; plannerAltM: number; ceilingM: number }
 
 export const DEFAULT_BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL?.trim() || 'ws://localhost:8765'
 
@@ -101,11 +109,12 @@ export class Px4BridgeSource implements DroneSource {
   private _returnAltM: number | null = null
   private _returnPathPoints = 0
   private _config: SimConfig | null = null
+  private _ai = false
   private readonly configListeners = new Set<(c: SimConfig | null) => void>()
   private readonly listeners = new Set<(s: DroneState) => void>()
   private readonly statusListeners = new Set<(s: BridgeStatus) => void>()
   private readonly noticeListeners = new Set<(message: string) => void>()
-  private readonly pending = new Map<string, { resolve: () => void; reject: (e: Error) => void; timer: number }>()
+  private readonly pending = new Map<string, { resolve: (ack: { plan?: unknown }) => void; reject: (e: Error) => void; timer: number }>()
   private wanted = false
   private attempt = 0
   private retryTimer: number | undefined
@@ -134,6 +143,11 @@ export class Px4BridgeSource implements DroneSource {
   /** Points in the return path loaded in PX4 (0: none, PX4 returns straight home). */
   get returnPathPoints() {
     return this._returnPathPoints
+  }
+
+  /** The bridge can plan routes described in words (it has an Anthropic API key). */
+  get ai() {
+    return this._ai
   }
 
   /** The sim settings the bridge has applied (null until it reports them). */
@@ -191,15 +205,30 @@ export class Px4BridgeSource implements DroneSource {
   }
 
   /** Sends a command to PX4; resolves when PX4 accepts it, rejects with PX4's reason otherwise. */
-  command(action: Px4Command, params: Px4CommandParams = {}): Promise<void> {
+  async command(action: Px4Command, params: Px4CommandParams = {}): Promise<void> {
+    await this.send(action, params, COMMAND_TIMEOUT_MS, `No reply to "${action}" from PX4`)
+  }
+
+  /**
+   * Asks the bridge (Claude) to turn a route described in words into steps. Works without
+   * PX4. Rejects with a message for the pilot (no API key, Claude declined, …).
+   */
+  async composeRoute(text: string, context: ComposeContext): Promise<ComposePlan> {
+    const ack = await this.send('composeRoute', { text, context }, COMPOSE_TIMEOUT_MS, 'Claude took too long to answer')
+    const plan = parseComposePlan(ack.plan)
+    if (!plan) throw new Error("Claude's answer wasn't a route")
+    return plan
+  }
+
+  private send(action: string, params: object, timeoutMs: number, timeoutMessage: string): Promise<{ plan?: unknown }> {
     const ws = this.ws
     if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Not connected to the bridge'))
     const id = crypto.randomUUID()
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(id)
-        reject(new Error(`No reply to "${action}" from PX4`))
-      }, COMMAND_TIMEOUT_MS)
+        reject(new Error(timeoutMessage))
+      }, timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
       ws.send(JSON.stringify({ type: 'command', id, action, ...params }))
     })
@@ -245,6 +274,7 @@ export class Px4BridgeSource implements DroneSource {
       this._geofence = msg.geofence ?? null
       this._returnAltM = msg.returnAltM ?? null
       this._returnPathPoints = msg.returnPathPoints ?? 0
+      this._ai = msg.ai === true
       const config = parseSimConfig(msg.config)
       if (JSON.stringify(config) !== JSON.stringify(this._config)) {
         this._config = config
@@ -262,7 +292,7 @@ export class Px4BridgeSource implements DroneSource {
       if (!p) return
       this.pending.delete(msg.id)
       window.clearTimeout(p.timer)
-      if (msg.ok) p.resolve()
+      if (msg.ok) p.resolve(msg)
       else p.reject(new Error(msg.error ?? 'Command refused'))
     }
   }

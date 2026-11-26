@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { categoryOf, nearestPlaces, parsePlaces, placesFile, placesFromOsm, type NearbyPlace } from './nearby'
+import { categoryOf, namedPlace, nearestPlaces, parsePlaces, placesFile, placesFromOsm, type NearbyPlace } from './nearby'
 
 const LAT = 43.65
 const LON = -79.38
@@ -137,5 +137,25 @@ describe('placesFromOsm', () => {
       ],
     })
     expect(back.map((p) => p.name)).toEqual(['A'])
+  })
+})
+
+describe('namedPlace', () => {
+  const places = [
+    place('shopping_mall', 'CF Toronto Eaton Centre', 100, 50, 240),
+    place('transit_station', 'Union', 2000, 0),
+    place('park', 'Eaton Park', 5000, 0, 100),
+  ]
+
+  it('finds the listed place a geocoded name refers to, with its size', () => {
+    const found = namedPlace(places, 'the Eaton Centre', at(0, 0))!
+    expect(found.name).toBe('CF Toronto Eaton Centre')
+    expect(found.radiusM).toBe(240)
+  })
+
+  it('only nearby, and only whole words', () => {
+    expect(namedPlace(places, 'Eaton Centre', at(3000, 3000))).toBeNull()
+    expect(namedPlace(places, 'Uni', at(2000, 0))).toBeNull()
+    expect(namedPlace(places, 'Union Station', at(2000, 0))!.name).toBe('Union')
   })
 })

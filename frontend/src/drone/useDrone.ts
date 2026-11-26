@@ -7,7 +7,9 @@ import { KeyboardFlight } from './keyboardFlight'
 import { Px4BridgeSource, type BridgeStatus, type Px4Command, type Px4CommandParams } from './px4Bridge'
 import type { CrashSite } from './crash'
 import { useCollisions } from './useCollisions'
-import { loadMassingIndex, loadMassingTile } from '../data/torontoData'
+import { loadMassingIndex, loadMassingTile, loadPlaces } from '../data/torontoData'
+import { namedPlace, nearestPlaces } from '../places/nearby'
+import { bendCircles, compilePlan, type ComposeLookups } from './routeCompose'
 import { buildingName, type Building } from './collision'
 import { RouteSafety, type LatLon, type RouteCheck } from './routeSafety'
 import { pathLengthM } from './detour'
@@ -153,13 +155,41 @@ const FREE_FLY_ALT_M = 30
 type Options = {
   /** Map click picker (from the map API), for "pick on map" fly-to. */
   pickLocation?: MapApi['pickLocation']
+  /** Place search by name (the geocoder), for routes described in words. */
+  searchPlace?: MapApi['searchGoogle']
+}
+
+/** A route described in words: asking Claude, its questions, a problem, or the route it made. */
+export type ComposeStatus =
+  | { state: 'idle' }
+  | { state: 'asking'; text: string }
+  | { state: 'questions'; text: string; questions: string[] }
+  | { state: 'error'; text: string; message: string; problems: string[] }
+  | {
+      state: 'done'
+      text: string
+      summary: string
+      /** What was looked up ("Nearest hospital: …"). */
+      notes: string[]
+      /** Parts of the request the autopilot doesn't fly yet (hovering, landing at the end, …). */
+      notYet: string[]
+    }
+
+/** Real stops with the circle points after each, so a circle moves and goes as one. */
+function stopGroups(stops: FlyToTarget[]): FlyToTarget[][] {
+  const groups: FlyToTarget[][] = []
+  for (const s of stops) {
+    if (s.via && groups.length) groups[groups.length - 1].push(s)
+    else groups.push([s])
+  }
+  return groups
 }
 
 /**
  * All drone state for the UI: the PX4 connection (via the bridge), HUD data,
  * PX4 commands, keyboard flying, fly-to, collisions and crash/reset.
  */
-export function useDrone({ pickLocation }: Options = {}) {
+export function useDrone({ pickLocation, searchPlace }: Options = {}) {
   const [px4] = useState(() => new Px4BridgeSource())
   const [droneView, setDroneView] = useState<DroneView | null>(null)
   const [hud, setHud] = useState<HudInfo | null>(null)
@@ -174,6 +204,9 @@ export function useDrone({ pickLocation }: Options = {}) {
   const [mission, setMission] = useState<Mission>('choose')
   /** The route being planned: its stops, in order. */
   const [routeStops, setRouteStops] = useState<FlyToTarget[]>([])
+  /** A route described in words, and a height it asked for (the planner takes it). */
+  const [compose, setCompose] = useState<ComposeStatus>({ state: 'idle' })
+  const [composedAltM, setComposedAltM] = useState<{ altM: number; id: number } | null>(null)
   /** The route being flown (state for rendering, ref for event handlers). */
   const [routeRun, setRouteRun] = useState<RouteRun | null>(null)
   const routeRunRef = useRef<RouteRun | null>(null)
@@ -219,6 +252,7 @@ export function useDrone({ pickLocation }: Options = {}) {
       if (wasFlying && h && !flying) {
         setMission('choose')
         setRouteStops([])
+        setCompose({ state: 'idle' })
         updateRun(null)
         setAutopilot(false)
       }
@@ -452,6 +486,10 @@ export function useDrone({ pickLocation }: Options = {}) {
   // leg's safe height), how far and how long that is, and a grey preview on the map. In
   // flight: the same for what's left.
   const [planAltM, setPlanAltM] = useState(30)
+  const planAltRef = useRef(planAltM)
+  useEffect(() => {
+    planAltRef.current = planAltM
+  }, [planAltM])
   const start: RouteStart | null = hud
     ? { lat: hud.state.lat, lon: hud.state.lon, relAltM: hud.state.relAltM, inAir: hud.state.inAir }
     : null
@@ -510,10 +548,11 @@ export function useDrone({ pickLocation }: Options = {}) {
   const backToChoose = useCallback(() => {
     setMission(inAirRef.current ? 'free' : 'choose')
     setRouteStops([])
+    setCompose({ state: 'idle' })
   }, [])
 
   const addStop = useCallback((stop: FlyToTarget) => {
-    setRouteStops((stops) => (stops.length < ROUTE_MAX_STOPS ? [...stops, stop] : stops))
+    setRouteStops((stops) => (stopGroups(stops).length < ROUTE_MAX_STOPS ? [...stops, stop] : stops))
   }, [])
 
   const pickRouteStop = useCallback(async () => {
@@ -541,11 +580,15 @@ export function useDrone({ pickLocation }: Options = {}) {
     [addStop],
   )
 
-  const removeStop = useCallback((i: number) => setRouteStops((stops) => stops.filter((_, k) => k !== i)), [])
+  /** Stop i (counting real stops: a circle is one) is removed, with its circle points. */
+  const removeStop = useCallback((i: number) => setRouteStops((stops) => stopGroups(stops).filter((_, k) => k !== i).flat()), [])
   /** Move stop i one place earlier. */
   const moveStopUp = useCallback(
     (i: number) =>
-      setRouteStops((stops) => (i < 1 ? stops : [...stops.slice(0, i - 1), stops[i], stops[i - 1], ...stops.slice(i + 1)])),
+      setRouteStops((stops) => {
+        const g = stopGroups(stops)
+        return i < 1 || i >= g.length ? stops : [...g.slice(0, i - 1), g[i], g[i - 1], ...g.slice(i + 1)].flat()
+      }),
     [],
   )
 
@@ -697,6 +740,102 @@ export function useDrone({ pickLocation }: Options = {}) {
     setAutopilot(false)
   }, [px4Command, droneView, updateRun])
 
+  /**
+   * A route described in words: Claude (via the bridge) turns the text into steps, and the
+   * steps become the planned stops (places looked up, moves and circles worked out from
+   * where the drone will be), replacing any stops already planned. The usual route check,
+   * preview and battery estimate then apply.
+   */
+  const composeRoute = useCallback(
+    async (text: string) => {
+      const s = stateRef.current
+      if (!s) {
+        setCompose({ state: 'error', text, message: 'Waiting for the drone’s position.', problems: [] })
+        return
+      }
+      setCompose({ state: 'asking', text })
+      const config = simConfigRef.current
+      let plan
+      try {
+        plan = await px4.composeRoute(text, {
+          inAir: inAirRef.current,
+          relAltM: Math.round(s.relAltM),
+          plannerAltM: planAltRef.current,
+          ceilingM: config.ceilingM,
+        })
+      } catch (e) {
+        setCompose({ state: 'error', text, message: e instanceof Error ? e.message : String(e), problems: [] })
+        return
+      }
+      if (plan.questions.length) {
+        setCompose({ state: 'questions', text, questions: plan.questions })
+        return
+      }
+      const lookups: ComposeLookups = {
+        findPlace: async (name) => {
+          if (!searchPlace) return null
+          const found = (await searchPlace(name)).places[0]
+          if (!found) return null
+          const at = centreOf(found.target)
+          // The same place in the OpenStreetMap list, if it's there: its outline's centre and size
+          // (the geocoder gives a point, often an entrance), so a circle goes round all of it.
+          const listed = namedPlace(await loadPlaces().catch(() => []), name, at)
+          return listed && listed.radiusM > 0
+            ? { lat: listed.lat, lon: listed.lon, label: found.title, radiusM: listed.radiusM }
+            : { ...at, label: found.title }
+        },
+        findNearest: async (category, near) => nearestPlaces(await loadPlaces(), category, near),
+        buildingAround: async (at) => (routeSafety ? routeSafety.buildingAround(at) : null),
+      }
+      const home = s.home ?? { lat: s.lat, lon: s.lon }
+      let result
+      try {
+        result = await compilePlan(plan, { lat: s.lat, lon: s.lon, headingDeg: s.headingDeg, home, ceilingM: config.ceilingM }, lookups)
+      } catch (e) {
+        setCompose({ state: 'error', text, message: `Couldn't look up the places: ${e instanceof Error ? e.message : e}`, problems: [] })
+        return
+      }
+      if (!result.ok) {
+        setCompose({ state: 'error', text, message: "Couldn't make that into a route:", problems: result.problems })
+        return
+      }
+      const { route } = result
+      if (!route.stops.length) {
+        // Only "go home".
+        if (inAirRef.current) {
+          setCompose({ state: 'idle' })
+          void returnHome()
+        } else setCompose({ state: 'error', text, message: 'The drone is already home.', problems: [] })
+        return
+      }
+      const notYet = [
+        ...(route.hovers.length ? ['hovering'] : []),
+        ...(route.ending === 'land' ? ['landing at the end (press Land when it gets there)'] : []),
+        ...(route.ending === 'return' ? ['coming home at the end (press Return when it gets there)'] : []),
+      ]
+      // Circles passing right beside a building too tall to cross under the ceiling bend
+      // round it (see bendCircles) instead of the route being refused.
+      let stops = route.stops
+      if (routeSafety && route.circles.length) {
+        const homeAmslM = s.home?.altAmslM ?? s.altAmslM - s.relAltM
+        const maxCrossM = config.ceilingM - DETOUR_BELOW_CEILING_M
+        const bent = await bendCircles(route, (at) =>
+          routeSafety.check(at, at, homeAmslM).then((c) => c.destMinSafeRelAltM > maxCrossM, () => false),
+        )
+        if (!bent) {
+          setCompose({ state: 'error', text, message: 'Tall buildings stand all round that circle; try a wider one.', problems: [] })
+          return
+        }
+        if (bent.bent) route.notes.push('The circle bends round tall buildings beside it.')
+        stops = bent.stops
+      }
+      setRouteStops(stops)
+      if (route.altM !== null) setComposedAltM((prev) => ({ altM: route.altM!, id: (prev?.id ?? 0) + 1 }))
+      setCompose({ state: 'done', text, summary: plan.summary, notes: route.notes, notYet })
+    },
+    [px4, searchPlace, routeSafety, returnHome],
+  )
+
   return {
     /** Drone state for the 3D view (CesiumViewer prop). */
     source: px4,
@@ -724,7 +863,13 @@ export function useDrone({ pickLocation }: Options = {}) {
         onFreeFly: () => void freeFly(),
         onPlanRoute: () => setMission('route'),
         onBack: backToChoose,
-        routeStops,
+        // The stops the pilot sees (circles as one stop; their turning points are hidden).
+        routeStops: routeStops.filter((st) => !st.via),
+        ai: px4.ai,
+        compose,
+        composedAltM,
+        onComposeRoute: (text: string) => void composeRoute(text),
+        onComposeClear: () => setCompose({ state: 'idle' }),
         onPickRouteStop: () => void pickRouteStop(),
         onRemoveStop: removeStop,
         onMoveStopUp: moveStopUp,

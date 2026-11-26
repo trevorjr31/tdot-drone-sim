@@ -46,6 +46,7 @@ class Client:
         self.geofence: dict | None = None
         self.return_alt: float | None = None
         self.config: dict | None = None
+        self.ai = False
         self.acks: dict[str, dict] = {}
         self.states_seen = 0
 
@@ -60,16 +61,17 @@ class Client:
                 self.geofence = msg.get("geofence")
                 self.return_alt = msg.get("returnAltM")
                 self.config = msg.get("config")
+                self.ai = msg.get("ai") is True
                 print(f"Status: PX4 {'connected' if msg['px4Connected'] else 'not connected'} ({msg.get('px4Version')})")
             elif msg["type"] == "ack":
                 self.acks[msg["id"]] = msg
             elif msg["type"] == "notice":
                 print(f"Notice: {msg['message']}")
 
-    async def command(self, action: str, expect_refusal: bool = False, **params):
+    async def command(self, action: str, expect_refusal: bool = False, timeout: float = 30, **params):
         cid = str(uuid.uuid4())
         await self.ws.send(json.dumps({"type": "command", "id": cid, "action": action, **params}))
-        ack = await self.until(lambda: self.acks.get(cid), 30, f"ack for {action}")
+        ack = await self.until(lambda: self.acks.get(cid), timeout, f"ack for {action}")
         if expect_refusal:
             if ack["ok"]:
                 sys.exit(f"FAIL: {action} {params} should have been refused")
@@ -78,6 +80,7 @@ class Client:
             sys.exit(f"FAIL: {action} refused: {ack['error']}")
         else:
             print(f"{action}: accepted")
+        return ack
 
     async def until(self, predicate, timeout, what):
         try:
@@ -116,6 +119,17 @@ async def main():
         await c.until(lambda: c.config["keyboardMs"] == original + 1, 10, "changed setting in bridge status")
         await c.command("config", config={"keyboardMs": original})
         print(f"Sim config: cruise {c.config['cruiseMs']} m/s, battery {c.config['batteryMin']:.0f} min, ceiling {c.config['ceilingM']:.0f} m")
+
+        # Routes in words: without an API key the bridge says so; with one, Claude plans a simple route.
+        context = {"inAir": False, "relAltM": 0, "plannerAltM": 30, "ceilingM": 120}
+        if not c.ai:
+            await c.command("composeRoute", expect_refusal=True, text="go north 100 m then land", context=context)
+        else:
+            ack = await c.command("composeRoute", timeout=150, text="go north 100 m then land", context=context)
+            actions = [st["action"] for st in ack["plan"]["steps"]]
+            if actions != ["move", "land"]:
+                sys.exit(f"FAIL: composeRoute planned {ack['plan']}")
+            print(f"composeRoute: {ack['plan']['summary']}")
 
         # Let PX4 finish its pre-arm checks (GPS fix, home) before asking it to fly.
         await c.until(lambda: c.state.get("home") and c.state["flightMode"] != "Unknown", 60, "home position")

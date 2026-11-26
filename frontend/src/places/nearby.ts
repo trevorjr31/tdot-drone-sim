@@ -126,6 +126,36 @@ export function nearestPlaces(
   return found.sort((a, b) => a.edgeDistanceM - b.edgeDistanceM || a.distanceM - b.distanceM).slice(0, limit)
 }
 
+const simplify = (s: string) =>
+  s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\bthe\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+
+/**
+ * The listed place matching a name, nearest `near` within `withinM` metres: its full
+ * name and size, which a geocoder result (a point) doesn't have ("Eaton Centre" → "CF
+ * Toronto Eaton Centre", ~240 m across). Matches when one name contains the other. Null if none.
+ */
+export function namedPlace(places: NearbyPlace[], name: string, near: { lat: number; lon: number }, withinM = 400): NearbyResult | null {
+  const q = simplify(name)
+  if (q.length < 3) return null
+  const kx = mPerDegLon(near.lat)
+  let best: NearbyResult | null = null
+  for (const p of places) {
+    if (!p.name) continue
+    const n = simplify(p.name)
+    if (!` ${n} `.includes(` ${q} `) && !` ${q} `.includes(` ${n} `)) continue
+    const distanceM = Math.hypot((p.lon - near.lon) * kx, (p.lat - near.lat) * M_PER_DEG_LAT)
+    if (distanceM <= withinM && (!best || distanceM < best.distanceM))
+      best = { ...p, distanceM, edgeDistanceM: Math.max(0, distanceM - p.radiusM) }
+  }
+  return best
+}
+
 type OsmElement = {
   type: 'node' | 'way' | 'relation'
   id: number
